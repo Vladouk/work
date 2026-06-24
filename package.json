@@ -1,0 +1,48 @@
+{
+  "name": "telegram-job-hunter-bot",
+  "version": "1.0.0",
+  "description": "Telegram job-hunting bot for Poland - Junior IT positions",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "set DATABASE_URL=postgresql://postgres:111@localhost:5432/jobhunter && node dist/index.js",
+    "start:prod": "set DATABASE_URL=postgresql://postgres:111@localhost:5432/jobhunter && node dist/index.js",
+    "dev": "set DATABASE_URL=postgresql://postgres:111@localhost:5432/jobhunter && ts-node-dev --respawn --transpile-only --ignore-watch logs --ignore-watch uploads --ignore-watch dist --ignore-watch browser-profile src/index.ts",
+    "lint": "eslint \"src/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "prisma:generate": "set DATABASE_URL=postgresql://postgres:111@localhost:5432/jobhunter && prisma generate",
+    "prisma:migrate": "set DATABASE_URL=postgresql://postgres:111@localhost:5432/jobhunter && prisma migrate deploy",
+    "prisma:migrate:dev": "set DATABASE_URL=postgresql://postgres:111@localhost:5432/jobhunter && prisma migrate dev",
+    "prisma:studio": "prisma studio",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f bot"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.7.1",
+    "axios": "^1.6.2",
+    "cheerio": "^1.0.0-rc.12",
+    "cron": "^3.1.6",
+    "dotenv": "^16.3.1",
+    "form-data": "^4.0.6",
+    "grammy": "^1.21.1",
+    "openai": "^4.24.1",
+    "pdf-parse": "^1.1.1",
+    "playwright": "^1.61.1",
+    "winston": "^3.11.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/cron": "^2.4.0",
+    "@types/node": "^20.10.5",
+    "@types/pdf-parse": "^1.1.4",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.56.0",
+    "prettier": "^3.1.1",
+    "prisma": "^5.7.1",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.3.3"
+  }
+}

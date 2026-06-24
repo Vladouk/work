@@ -1,0 +1,294 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum JobSource {
+  LINKEDIN
+  NOFLUFFJOBS
+  JUSTJOINIT
+  PRACUJPL
+  BULLDOGJOB
+}
+
+enum JobCategory {
+  BACKEND
+  FULLSTACK
+  NODEJS
+  JAVASCRIPT
+  TYPESCRIPT
+  REACT
+  QA
+  IT_SUPPORT
+  PROJECT_COORDINATOR
+  OTHER
+}
+
+enum ExperienceLevel {
+  INTERN
+  JUNIOR
+  TRAINEE
+}
+
+enum JobType {
+  REMOTE
+  HYBRID
+  ONSITE
+}
+
+enum EngLevel {
+  ANY
+  A1
+  A2
+  B1
+  B2
+  C1
+  C2
+}
+
+enum ApplicationStatus {
+  SAVED
+  APPLIED
+  INTERVIEW
+  REJECTED
+  OFFER
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// ─── User ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id              Int               @id @default(autoincrement())
+  telegramId      BigInt            @unique
+  username        String?
+  firstName       String?
+  lastName        String?
+  isAdmin         Boolean           @default(false)
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  settings        UserSettings?
+  profile         UserProfile?
+  cvFiles         CvFile[]
+  applications    Application[]
+  notifications   Notification[]
+  searchSessions  SearchSession[]
+
+  @@map("users")
+}
+
+// ─── UserSettings ─────────────────────────────────────────────────────────────
+
+model UserSettings {
+  id              Int               @id @default(autoincrement())
+  userId          Int               @unique
+  keywords        String[]          @default(["junior", "node.js", "javascript"])
+  country         String            @default("Poland")
+  city            String?
+  remoteOnly      Boolean           @default(false)
+  salaryMin       Int?
+  salaryMax       Int?
+  currency        String            @default("PLN")
+  englishLevel    EngLevel          @default(ANY)
+  notifyEnabled   Boolean           @default(true)
+  minMatchScore   Int               @default(60)
+  categories      JobCategory[]     @default([])
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+// ─── UserProfile (for auto-apply) ─────────────────────────────────────────────
+
+model UserProfile {
+  id                Int     @id @default(autoincrement())
+  userId            Int     @unique
+  fullName          String?
+  email             String?
+  phone             String?
+  linkedin          String?
+  github            String?
+  position          String?
+  experienceMonths  Int     @default(0)
+  skills            String?
+  languages         String?
+  location          String?
+  salaryExpectation String?
+  coverNote         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+// ─── CvFile ───────────────────────────────────────────────────────────────────
+
+model CvFile {
+  id              Int               @id @default(autoincrement())
+  userId          Int
+  fileId          String
+  fileName        String
+  extractedText   String?
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("cv_files")
+}
+
+// ─── Vacancy ──────────────────────────────────────────────────────────────────
+
+model Vacancy {
+  id              Int               @id @default(autoincrement())
+  externalId      String?
+  title           String
+  company         String
+  location        String?
+  city            String?
+  country         String            @default("Poland")
+  isRemote        Boolean           @default(false)
+  salaryMin       Int?
+  salaryMax       Int?
+  currency        String?
+  description     String?
+  requirements    String?
+  url             String            @unique
+  source          JobSource
+  category        JobCategory       @default(OTHER)
+  experienceLevel ExperienceLevel   @default(JUNIOR)
+  jobType         JobType           @default(ONSITE)
+  postedAt        DateTime?
+  scrapedAt       DateTime          @default(now())
+  isActive        Boolean           @default(true)
+  tags            String[]          @default([])
+
+  applications    Application[]
+  notifications   Notification[]
+  cvMatches       CvMatch[]
+
+  @@index([source])
+  @@index([scrapedAt])
+  @@index([isActive])
+  @@index([city])
+  @@index([isRemote])
+  @@map("vacancies")
+}
+
+// ─── CvMatch ──────────────────────────────────────────────────────────────────
+
+model CvMatch {
+  id              Int               @id @default(autoincrement())
+  vacancyId       Int
+  cvFileId        Int
+  matchScore      Int
+  matchReason     String?
+  missingSkills   String[]          @default([])
+  coverLetter     String?
+  cvSummary       String?
+  outreachMsg     String?
+  createdAt       DateTime          @default(now())
+
+  vacancy         Vacancy           @relation(fields: [vacancyId], references: [id], onDelete: Cascade)
+
+  @@unique([vacancyId, cvFileId])
+  @@map("cv_matches")
+}
+
+// ─── Application ──────────────────────────────────────────────────────────────
+
+model Application {
+  id              Int               @id @default(autoincrement())
+  userId          Int
+  vacancyId       Int
+  status          ApplicationStatus @default(SAVED)
+  notes           String?
+  appliedAt       DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vacancy         Vacancy           @relation(fields: [vacancyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, vacancyId])
+  @@map("applications")
+}
+
+// ─── Notification ─────────────────────────────────────────────────────────────
+
+model Notification {
+  id              Int                 @id @default(autoincrement())
+  userId          Int
+  vacancyId       Int
+  matchScore      Int?
+  status          NotificationStatus  @default(PENDING)
+  sentAt          DateTime?
+  errorMsg        String?
+  createdAt       DateTime            @default(now())
+
+  user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vacancy         Vacancy             @relation(fields: [vacancyId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+// ─── SearchSession ────────────────────────────────────────────────────────────
+
+model SearchSession {
+  id              Int               @id @default(autoincrement())
+  userId          Int
+  query           String
+  resultsCount    Int               @default(0)
+  createdAt       DateTime          @default(now())
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("search_sessions")
+}
+
+// ─── ParserLog ────────────────────────────────────────────────────────────────
+
+model ParserLog {
+  id              Int               @id @default(autoincrement())
+  source          JobSource
+  startedAt       DateTime          @default(now())
+  finishedAt      DateTime?
+  jobsFound       Int               @default(0)
+  jobsNew         Int               @default(0)
+  jobsDuplicate   Int               @default(0)
+  status          String            @default("running")
+  errorMsg        String?
+
+  @@map("parser_logs")
+}
+
+// ─── AppLog ───────────────────────────────────────────────────────────────────
+
+model AppLog {
+  id              Int               @id @default(autoincrement())
+  level           String
+  message         String
+  meta            Json?
+  createdAt       DateTime          @default(now())
+
+  @@index([level])
+  @@index([createdAt])
+  @@map("app_logs")
+}

@@ -1,0 +1,20 @@
+version: '3.9'
+
+# Development override - adds hot reload and exposes more ports
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  bot:
+    build:
+      context: .
+      target: builder
+    command: npm run dev
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/dist
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: debug
