@@ -99,28 +99,9 @@ export class LinkedInApplyService {
 
       const page = await ctx.newPage();
 
-      // Перевіряємо логін через cookies замість навігації
-      const cookiesPath = path.resolve(process.cwd(), 'browser-profile', 'cookies.json');
-      if (fs.existsSync(cookiesPath)) {
-        try {
-          const raw = fs.readFileSync(cookiesPath, 'utf-8');
-          const savedCookies = JSON.parse(raw);
-          await ctx.addCookies(savedCookies.filter((c: { name: string }) => c.name));
-        } catch { /* proceed without */ }
-      }
-
-      // Швидка перевірка логіну
-      await page.goto(`${BASE}/feed/`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(2000);
-
-      const currentUrl = page.url();
-      const isLoggedIn = !currentUrl.includes('/login') &&
-        !currentUrl.includes('/checkpoint') &&
-        !currentUrl.includes('/authwall') &&
-        (await page.locator('.global-nav__me, img.global-nav__me-photo, .feed-identity-module')
-          .isVisible({ timeout: 5000 }).catch(() => false));
-
-      if (!isLoggedIn) {
+      // Перевіряємо логін напряму через cookies.json (без навігації)
+      const { loggedIn } = await this.checkLogin();
+      if (!loggedIn) {
         await page.close();
         await ctx.close();
         throw new Error('NOT_LOGGED_IN');
@@ -129,7 +110,7 @@ export class LinkedInApplyService {
       logger.info('[LinkedIn] ✅ Залогінений, починаю пошук...');
       await onProgress(`🔍 Шукаю Easy Apply вакансії: "${keywords}" в ${location}...`);
 
-      // Пошук Easy Apply вакансій
+      // Одразу на сторінку пошуку — persistent context вже має cookies
       const searchUrl = `${BASE}/jobs/search/?keywords=${encodeURIComponent(keywords)}&location=${encodeURIComponent(location)}&f_E=1,2&f_EA=true&sortBy=DD`;
       await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await page.waitForTimeout(3000);
