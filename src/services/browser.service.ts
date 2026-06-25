@@ -229,7 +229,13 @@ export class BrowserService {
     if (url.includes('smartrecruiters')) return this.smartrecruiters(page, p);
     if (url.includes('teamtailor'))      return this.teamtailor(page, p);
     if (url.includes('ashbyhq.com'))     return this.ashby(page, p);
+    // Додаткові ATS
+    if (url.includes('oraclecloud.com')) return this.oracleHcm(page, p, originalUrl);
+    if (url.includes('successfactors'))  return this.successFactors(page, p, originalUrl);
+    if (url.includes('taleo.net'))       return this.taleo(page, p, originalUrl);
+    if (url.includes('icims.com'))       return this.icims(page, p, originalUrl);
 
+    // Для всіх інших сайтів — universal smart filler
     return this.generic(page, p, originalUrl);
   }
 
@@ -579,6 +585,10 @@ export class BrowserService {
     if (currentUrl.includes('smartrecruiters')) return this.smartrecruiters(page, p);
     if (currentUrl.includes('teamtailor'))      return this.teamtailor(page, p);
     if (currentUrl.includes('ashbyhq.com'))     return this.ashby(page, p);
+    if (currentUrl.includes('oraclecloud.com')) return this.oracleHcm(page, p, originalUrl);
+    if (currentUrl.includes('successfactors'))  return this.successFactors(page, p, originalUrl);
+    if (currentUrl.includes('taleo.net'))       return this.taleo(page, p, originalUrl);
+    if (currentUrl.includes('icims.com'))       return this.icims(page, p, originalUrl);
 
     // Невідомий зовнішній сайт — universal flow:
     // КРОК 1: Клікаємо "Apply now" якщо є — відкриває модал
@@ -1363,6 +1373,120 @@ export class BrowserService {
     await this.f(page, 'textarea', p.coverLetter);
     if (p.cvLocalPath) await this.upload(page, p.cvLocalPath);
     return { success: true, method: 'Ashby', message: '✅ Ashby заповнено\\!' };
+  }
+
+  // ── Oracle HCM (oraclecloud.com) ───────────────────────────────────────────
+  private async oracleHcm(page: Page, p: FillFormProfile, originalUrl: string): Promise<BrowserApplyResult> {
+    logger.info('[Browser] Oracle HCM handler...');
+    await page.waitForTimeout(3000);
+
+    // Oracle HCM — кнопка "Apply Now"
+    const applyBtn = page.locator('button:has-text("Apply Now"), a:has-text("Apply Now"), button:has-text("Aplikuj")').first();
+    if (await applyBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await applyBtn.click();
+      await page.waitForTimeout(3000);
+      await this.acceptCookies(page);
+    }
+
+    // Oracle може відкрити нову вкладку або модал з формою
+    await this.fillExternalForm(page, p);
+    if (p.cvLocalPath) await this.upload(page, p.cvLocalPath);
+    await this.acceptConsents(page);
+
+    const submitBtn = page.locator('button:has-text("Submit"), button:has-text("Apply"), button[type="submit"]').first();
+    if (await submitBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await submitBtn.click();
+      await page.waitForTimeout(3000);
+      return { success: true, method: 'Oracle HCM', message: '✅ *Відгук відправлено через Oracle HCM\\!*' };
+    }
+
+    return {
+      success: false, method: 'Oracle HCM',
+      message: `📋 Форму Oracle HCM заповнено\\. Натисни Submit вручну\\.\n\n🔗 [Вакансія](${originalUrl})`,
+    };
+  }
+
+  // ── SAP SuccessFactors ─────────────────────────────────────────────────────
+  private async successFactors(page: Page, p: FillFormProfile, originalUrl: string): Promise<BrowserApplyResult> {
+    logger.info('[Browser] SuccessFactors handler...');
+    await page.waitForTimeout(3000);
+    await this.acceptCookies(page);
+
+    // SuccessFactors Apply button
+    const applyBtn = page.locator('button:has-text("Apply"), a:has-text("Apply Now"), [data-automation-id*="apply"]').first();
+    if (await applyBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await applyBtn.click();
+      await page.waitForTimeout(3000);
+    }
+
+    await this.fillExternalForm(page, p);
+    if (p.cvLocalPath) await this.upload(page, p.cvLocalPath);
+    await this.acceptConsents(page);
+
+    const submit = page.locator('button:has-text("Submit"), [data-automation-id*="submit"]').first();
+    if (await submit.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await submit.click();
+      await page.waitForTimeout(3000);
+      return { success: true, method: 'SuccessFactors', message: '✅ *Відгук відправлено через SuccessFactors\\!*' };
+    }
+
+    return {
+      success: false, method: 'SuccessFactors',
+      message: `📋 Форму SuccessFactors заповнено\\. Натисни Submit вручну\\.\n\n🔗 [Вакансія](${originalUrl})`,
+    };
+  }
+
+  // ── Oracle Taleo ───────────────────────────────────────────────────────────
+  private async taleo(page: Page, p: FillFormProfile, originalUrl: string): Promise<BrowserApplyResult> {
+    logger.info('[Browser] Taleo handler...');
+    await page.waitForTimeout(3000);
+    await this.acceptCookies(page);
+
+    await this.fillExternalForm(page, p);
+    if (p.cvLocalPath) await this.upload(page, p.cvLocalPath);
+    await this.acceptConsents(page);
+
+    const submit = page.locator('button:has-text("Submit"), input[type="submit"], button:has-text("Next")').first();
+    if (await submit.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await submit.click();
+      await page.waitForTimeout(3000);
+      return { success: true, method: 'Taleo', message: '✅ *Відгук відправлено через Taleo\\!*' };
+    }
+
+    return {
+      success: false, method: 'Taleo',
+      message: `📋 Форму Taleo заповнено\\. Натисни Submit вручну\\.\n\n🔗 [Вакансія](${originalUrl})`,
+    };
+  }
+
+  // ── iCIMS ──────────────────────────────────────────────────────────────────
+  private async icims(page: Page, p: FillFormProfile, originalUrl: string): Promise<BrowserApplyResult> {
+    logger.info('[Browser] iCIMS handler...');
+    await page.waitForTimeout(3000);
+    await this.acceptCookies(page);
+
+    // iCIMS — кнопка "Apply for Job"
+    const applyBtn = page.locator('button:has-text("Apply for Job"), a:has-text("Apply"), button:has-text("Apply")').first();
+    if (await applyBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await applyBtn.click();
+      await page.waitForTimeout(3000);
+    }
+
+    await this.fillExternalForm(page, p);
+    if (p.cvLocalPath) await this.upload(page, p.cvLocalPath);
+    await this.acceptConsents(page);
+
+    const submit = page.locator('button:has-text("Submit"), button[type="submit"]').first();
+    if (await submit.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await submit.click();
+      await page.waitForTimeout(3000);
+      return { success: true, method: 'iCIMS', message: '✅ *Відгук відправлено через iCIMS\\!*' };
+    }
+
+    return {
+      success: false, method: 'iCIMS',
+      message: `📋 Форму iCIMS заповнено\\. Натисни Submit вручну\\.\n\n🔗 [Вакансія](${originalUrl})`,
+    };
   }
 
   private async generic(page: Page, p: FillFormProfile, originalUrl: string): Promise<BrowserApplyResult> {

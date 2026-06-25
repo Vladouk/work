@@ -21,21 +21,23 @@ const runningApply = new Set<number>();
 function extractUrls(text: string): string[] {
   const urlRegex = /https?:\/\/[^\s,\n"'<>]+/g;
   const matches = text.match(urlRegex) ?? [];
-  // Фільтруємо тільки відомі job сайти
-  const jobSites = [
-    'pracuj.pl', 'justjoin.it', 'nofluffjobs.com', 'bulldogjob.pl',
-    'theprotocol.it', 'greenhouse.io', 'lever.co', 'workable.com',
-    'recruitee.com', 'traffit.com', 'smartrecruiters.com', 'teamtailor',
-    'ashbyhq.com', 'sii.pl', 'capgemini.com', 'infosys.com',
-  ];
-  return matches.filter(url =>
-    jobSites.some(site => url.includes(site)) ||
-    url.includes('/praca/') ||
-    url.includes('/job') ||
-    url.includes('/oferta') ||
-    url.includes('/vacancy') ||
-    url.includes('/career'),
-  ).slice(0, 30); // максимум 30 за раз
+
+  return matches
+    .map(u => u.replace(/[.,;)]+$/, '')) // прибираємо trailing пунктуацію
+    .filter(url => {
+      try {
+        new URL(url); // валідний URL
+        // Виключаємо явно нерелевантні
+        const lower = url.toLowerCase();
+        if (lower.includes('telegram.org')) return false;
+        if (lower.includes('github.com') && !lower.includes('job')) return false;
+        if (lower.includes('google.com/maps')) return false;
+        return true; // приймаємо всі інші — роботодавець може бути будь-який
+      } catch {
+        return false;
+      }
+    })
+    .slice(0, 30); // максимум 30 за раз
 }
 
 // ── /apply_bulk команда ─────────────────────────────────────────────────────
