@@ -11,6 +11,7 @@ import { handleCv, handleCvUpload, handleCvMatchJobs, handleCoverLetterCallback,
 import { handleStats } from './handlers/stats.handler';
 import { handleProfile, startProfileWizard, handleProfileInput, clearProfile } from './handlers/profile.handler';
 import { handleAutoApplyPrompt, handleAutoApplyConfirm } from './handlers/autoapply.handler';
+import { handleBulkApplyCommand, handleUrlsInMessage, handleBulkUrlCallback, handleBulkStartCallback, handleBulkStop } from './handlers/bulkapply.handler';
 import { handleAdmin, handleAdminUsers, handleAdminJobs, handleAdminParsers, handleAdminRunParsers, handleAdminLogs } from './handlers/admin.handler';
 
 import { UserRepository } from '../repositories/UserRepository';
@@ -43,6 +44,8 @@ export function createBot(): Bot {
   bot.command('cv', handleCv);
   bot.command('stats', handleStats);
   bot.command('profile', handleProfile);
+  bot.command('apply_bulk', handleBulkApplyCommand);
+  bot.command('stop_apply', async (ctx) => { await handleBulkStop(ctx); });
   // Admin
   bot.command('admin', handleAdmin);
   bot.command('admin_users', handleAdminUsers);
@@ -136,6 +139,19 @@ export function createBot(): Bot {
     await handleOutreachCallback(ctx, parseInt(ctx.match[1], 10));
   });
 
+  // ── Bulk apply callbacks ───────────────────────────────────────────────────
+  bot.callbackQuery(/^bulk_url_(.+)$/, async (ctx) => {
+    await handleBulkUrlCallback(ctx, ctx.match[1]);
+  });
+
+  bot.callbackQuery(/^bulk_start_(.+)$/, async (ctx) => {
+    await handleBulkStartCallback(ctx, ctx.match[1]);
+  });
+
+  bot.callbackQuery('bulk_stop', async (ctx) => {
+    await handleBulkStop(ctx);
+  });
+
   // ── Auto-apply callbacks ───────────────────────────────────────────────────
   bot.callbackQuery(/^auto_apply_(\d+)$/, async (ctx) => {
     logger.info(`[Bot] auto_apply callback: ${ctx.match[1]}`);
@@ -169,6 +185,10 @@ export function createBot(): Bot {
     // Settings input
     const settingsHandled = await handleSettingsInput(ctx);
     if (settingsHandled) return;
+
+    // URLs in message → bulk apply prompt
+    const urlsHandled = await handleUrlsInMessage(ctx);
+    if (urlsHandled) return;
 
     // Treat other text as search
     const text = ctx.message.text;
