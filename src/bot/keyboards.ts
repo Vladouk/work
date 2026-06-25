@@ -48,6 +48,7 @@ export function jobActionsKeyboard(jobId: number): InlineKeyboard {
     .row()
     .text('📨 Авто-відгук', `auto_apply_${jobId}`)
     .row()
+    .text('👎 Не підходить', `reject_job_${jobId}`)
     .text('❌ Приховати', `hide_job_${jobId}`);
 }
 

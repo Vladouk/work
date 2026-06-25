@@ -7,3 +7,8 @@ uploads/
 coverage/
 prisma/migrations/*.sql
 browser-profile/
+debug-*.ts
+export-*.ts
+login-*.ts
+test-*.js
+test-*.ts

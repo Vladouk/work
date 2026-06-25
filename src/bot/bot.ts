@@ -112,6 +112,22 @@ export function createBot(): Bot {
     await ctx.deleteMessage().catch(() => undefined);
   });
 
+  bot.callbackQuery(/^reject_job_(\d+)$/, async (ctx) => {
+    const vacancyId = parseInt(ctx.match[1], 10);
+    const from = ctx.from;
+    if (!from) return;
+    await ctx.answerCallbackQuery('Позначено як не підходить 👎');
+    const user = await userRepo.findByTelegramId(BigInt(from.id));
+    if (user) {
+      await prisma.application.upsert({
+        where: { userId_vacancyId: { userId: user.id, vacancyId } },
+        create: { userId: user.id, vacancyId, status: 'REJECTED', notes: 'user:rejected' },
+        update: { status: 'REJECTED', notes: 'user:rejected' },
+      });
+    }
+    await ctx.deleteMessage().catch(() => undefined);
+  });
+
   bot.callbackQuery(/^cover_letter_(\d+)$/, async (ctx) => {
     await handleCoverLetterCallback(ctx, parseInt(ctx.match[1], 10));
   });

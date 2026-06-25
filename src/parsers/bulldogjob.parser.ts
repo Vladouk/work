@@ -44,23 +44,21 @@ export class BulldogJobParser extends BaseParser {
     const $ = cheerio.load(response.data as string);
     const vacancies: RawVacancy[] = [];
 
-    // Bulldogjob зберігає дані у __NEXT_DATA__
+    // Bulldogjob зберігає дані у __NEXT_DATA__ -> props.pageProps.jobs
     const nextDataRaw = $('#__NEXT_DATA__').html();
     if (nextDataRaw) {
       try {
         const nextData = JSON.parse(nextDataRaw);
-        const jobs =
-          this.deepFind(nextData, 'jobs') ??
-          this.deepFind(nextData, 'offers') ??
-          this.deepFind(nextData, 'listings') ??
-          [];
+        // Прямий шлях — pageProps.jobs
+        const jobs = nextData?.props?.pageProps?.jobs ?? [];
 
-        for (const job of jobs as object[]) {
-          const mapped = this.mapJob(job);
-          if (mapped) vacancies.push(mapped);
+        if (Array.isArray(jobs) && jobs.length > 0) {
+          for (const job of jobs) {
+            const mapped = this.mapJob(job);
+            if (mapped) vacancies.push(mapped);
+          }
+          if (vacancies.length > 0) return vacancies;
         }
-
-        if (vacancies.length > 0) return vacancies;
       } catch {
         /* fall through до HTML */
       }
@@ -109,11 +107,11 @@ export class BulldogJobParser extends BaseParser {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private mapJob(job: any): RawVacancy | null {
     try {
-      const title: string = job.title ?? job.name ?? '';
+      const title: string = job.position ?? job.title ?? job.name ?? '';
       const id: string = String(job.id ?? job.slug ?? '');
       if (!title) return null;
 
-      const seniority: string = (job.seniority ?? job.experienceLevel ?? '').toLowerCase();
+      const seniority: string = (job.experienceLevel ?? job.seniority ?? '').toLowerCase();
       const isJuniorLevel =
         seniority === 'junior' ||
         seniority === 'intern' ||
@@ -122,30 +120,40 @@ export class BulldogJobParser extends BaseParser {
 
       if (!isJuniorLevel) return null;
 
-      const city: string = job.city ?? job.location ?? '';
-      const isRemote: boolean = job.remote ?? job.isRemote ?? false;
+      const city: string = job.city ?? '';
+      const isRemote: boolean = job.remote ?? job.environment?.remotePossible ?? job.isRemote ?? false;
 
       if (!this.isAllowedLocation(`${city} ${isRemote ? 'remote' : ''}`)) return null;
 
-      const jobUrl = job.url
-        ? job.url.startsWith('http') ? job.url : `${BASE}${job.url}`
-        : `${BASE}/jobs/${id}`;
+      // Зарплата з denominatedSalaryLong
+      let salaryMin: number | undefined;
+      let salaryMax: number | undefined;
+      let currency = 'PLN';
+
+      if (job.denominatedSalaryLong?.money) {
+        const parsed = this.parseSalary(job.denominatedSalaryLong.money);
+        salaryMin = parsed.min;
+        salaryMax = parsed.max;
+        currency = job.denominatedSalaryLong.currency ?? 'PLN';
+      }
+
+      const jobUrl = `https://bulldogjob.pl/companies/jobs/${id}`;
 
       return {
         title,
-        company: job.company?.name ?? job.companyName ?? '',
+        company: job.company?.name ?? '',
         city,
         location: city || (isRemote ? 'Remote' : 'Poland'),
         country: 'Poland',
         isRemote,
-        salaryMin: job.salaryFrom ?? job.salary_from,
-        salaryMax: job.salaryTo ?? job.salary_to,
-        currency: job.currency ?? 'PLN',
+        salaryMin,
+        salaryMax,
+        currency,
         url: jobUrl,
         source: this.source,
-        category: this.detectCategory(title, (job.skills ?? []).join(' ')),
+        category: this.detectCategory(title, (job.technologyTags ?? []).join(' ')),
         experienceLevel: this.detectExperienceLevel(seniority || title),
-        tags: job.skills ?? [],
+        tags: job.technologyTags ?? [],
         externalId: id || undefined,
       };
     } catch {

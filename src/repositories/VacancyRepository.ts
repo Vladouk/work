@@ -32,13 +32,16 @@ export class VacancyRepository implements IVacancyRepository {
   }
 
   async createMany(data: RawVacancy[]): Promise<{ count: number }> {
+    // Normalize URLs — strip tracking params (s=, searchId=, etc.)
+    const normalized = data.map((v) => ({ ...v, url: this.normalizeUrl(v.url) }));
+
     // Filter out duplicates by URL
     const existingUrls = await prisma.vacancy.findMany({
-      where: { url: { in: data.map((v) => v.url) } },
+      where: { url: { in: normalized.map((v) => v.url) } },
       select: { url: true },
     });
     const existingUrlSet = new Set(existingUrls.map((v) => v.url));
-    const newVacancies = data.filter((v) => !existingUrlSet.has(v.url));
+    const newVacancies = normalized.filter((v) => !existingUrlSet.has(v.url));
 
     if (newVacancies.length === 0) return { count: 0 };
 
@@ -82,10 +85,10 @@ export class VacancyRepository implements IVacancyRepository {
   async findMany(filter: VacancyFilter): Promise<Vacancy[]> {
     const where = this.buildWhereClause(filter);
     
-    // Exclude already applied vacancies if requested
+    // Exclude already applied/rejected vacancies if requested
     if (filter.excludeApplied && filter.userId) {
       const applied = await prisma.application.findMany({
-        where: { userId: filter.userId },
+        where: { userId: filter.userId, status: { in: ['APPLIED', 'SAVED', 'REJECTED'] } },
         select: { vacancyId: true },
       });
       const appliedIds = new Set(applied.map((a) => a.vacancyId));
@@ -121,7 +124,7 @@ export class VacancyRepository implements IVacancyRepository {
     // Exclude already applied vacancies if requested
     if (f.excludeApplied && f.userId) {
       const applied = await prisma.application.findMany({
-        where: { userId: f.userId },
+        where: { userId: f.userId, status: { in: ['APPLIED', 'SAVED', 'REJECTED'] } },
         select: { vacancyId: true },
       });
       const appliedIds = new Set(applied.map((a) => a.vacancyId));
@@ -138,6 +141,19 @@ export class VacancyRepository implements IVacancyRepository {
   async existsByUrl(url: string): Promise<boolean> {
     const count = await prisma.vacancy.count({ where: { url } });
     return count > 0;
+  }
+
+  private normalizeUrl(url: string): string {
+    try {
+      const u = new URL(url);
+      // Remove tracking/session params common across job boards
+      ['s', 'searchId', 'utm_source', 'utm_medium', 'utm_campaign',
+       'utm_content', 'utm_term', 'ref', 'src', 'cd', 'ad', 'gclid',
+       'gbraid', 'gad_source', 'gad_campaignid'].forEach((p) => u.searchParams.delete(p));
+      return u.toString();
+    } catch {
+      return url;
+    }
   }
 
   private buildWhereClause(filter: VacancyFilter): Prisma.VacancyWhereInput {

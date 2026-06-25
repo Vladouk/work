@@ -58,15 +58,19 @@ export class NotificationService {
 
     logger.info(`[Notifications] User ${userId}: ${newVacancies.length} new vacancies to check`);
 
-    const cv = await this.cvRepo.findActiveByUser(userId);
-    const minScore = settings?.minMatchScore ?? 60;
+    // Максимум 10 нотифікацій за цикл щоб не спамити
+    const toNotify = newVacancies.slice(0, 10);
 
-    for (const vacancy of newVacancies) {
+    const cv = await this.cvRepo.findActiveByUser(userId);
+    const minScore = settings?.minMatchScore ?? 0; // 0 = відправляємо всі без фільтру
+
+    for (const vacancy of toNotify) {
       try {
         let matchScore: number | undefined;
         let matchReason: string | undefined;
 
-        if (cv?.extractedText) {
+        // AI збіг рахуємо тільки якщо є CV і поріг > 0
+        if (cv?.extractedText && minScore > 0) {
           const existing = await this.cvRepo.findMatch(vacancy.id, cv.id);
           if (existing) {
             matchScore = existing.matchScore;

@@ -6,27 +6,53 @@ import { logger } from '../infrastructure/logger';
 
 const BASE = 'https://www.pracuj.pl';
 
-// Пошукові запити: junior IT + Wrocław/Remote
+// Пошукові запити: junior IT — ширше охоплення
 const SEARCH_URLS = [
+  // Wrocław — різні технології
+  `${BASE}/praca/junior;kw/wroclaw;wp?rd=30&et=1%2C17&pp=50`,
+  `${BASE}/praca/mlodszy;kw/wroclaw;wp?rd=30&et=1%2C17&pp=50`,
   `${BASE}/praca/junior%20developer;kw/wroclaw;wp?rd=30&et=1%2C17&pp=50`,
-  `${BASE}/praca/junior%20node.js;kw/wroclaw;wp?rd=30&pp=50`,
   `${BASE}/praca/junior%20react;kw/wroclaw;wp?rd=30&pp=50`,
+  `${BASE}/praca/junior%20node.js;kw/wroclaw;wp?rd=30&pp=50`,
   `${BASE}/praca/junior%20javascript;kw/wroclaw;wp?rd=30&pp=50`,
   `${BASE}/praca/junior%20typescript;kw/wroclaw;wp?rd=30&pp=50`,
+  `${BASE}/praca/junior%20java;kw/wroclaw;wp?rd=30&pp=50`,
+  `${BASE}/praca/junior%20python;kw/wroclaw;wp?rd=30&pp=50`,
+  `${BASE}/praca/junior%20.net;kw/wroclaw;wp?rd=30&pp=50`,
   `${BASE}/praca/qa%20junior;kw/wroclaw;wp?rd=30&pp=50`,
+  `${BASE}/praca/tester%20oprogramowania;kw/wroclaw;wp?rd=30&pp=50`,
   `${BASE}/praca/it%20support;kw/wroclaw;wp?rd=30&et=1%2C17&pp=50`,
   `${BASE}/praca/helpdesk;kw/wroclaw;wp?rd=30&pp=50`,
+  `${BASE}/praca/intern;kw/wroclaw;wp?rd=30&et=1%2C17&pp=50`,
+  `${BASE}/praca/staz%20it;kw/wroclaw;wp?rd=30&pp=50`,
   // Remote по всій Польщі
-  `${BASE}/praca/junior%20developer;kw?rd=0&et=1%2C17&wm=1&pp=50`,
+  `${BASE}/praca/junior;kw?rd=0&wm=1&et=1%2C17&pp=50`,
+  `${BASE}/praca/mlodszy%20programista;kw?wm=1&pp=50`,
+  `${BASE}/praca/junior%20developer;kw?rd=0&wm=1&pp=50`,
+  `${BASE}/praca/junior%20react;kw?wm=1&pp=50`,
   `${BASE}/praca/junior%20node.js;kw?wm=1&pp=50`,
+  `${BASE}/praca/junior%20python;kw?wm=1&pp=50`,
+  `${BASE}/praca/qa%20junior;kw?wm=1&pp=50`,
 ];
 
-// Ключові слова для фільтрації заголовків
+// IT ключові слова — вакансія ПОВИННА містити хоча б одне
+const IT_KEYWORDS = [
+  'developer', 'programist', 'software', 'engineer', 'devops', 'qa', 'tester',
+  'javascript', 'typescript', 'python', 'java', 'react', 'node', 'angular',
+  'vue', 'php', 'ruby', 'golang', 'kotlin', 'swift', '.net', 'c#', 'c++',
+  'backend', 'frontend', 'fullstack', 'full-stack', 'it support', 'helpdesk',
+  'data', 'analyst', 'cloud', 'aws', 'azure', 'linux', 'sql', 'database',
+  'cyber', 'security', 'network', 'sysadmin', 'administrator', 'tech',
+  'scrum', 'agile', 'product owner', 'business analyst', 'ux', 'ui',
+  'intern', 'stażysta', 'praktykant', 'trainee', 'mlodszy', 'młodszy',
+];
+
+// Junior рівень — вакансія ПОВИННА містити хоча б одне
 const KEYWORDS = [
-  'junior', 'intern', 'trainee', 'stażysta', 'praktykant', 'młodszy',
+  'junior', 'intern', 'trainee', 'stażysta', 'praktykant', 'młodszy', 'mlodszy',
   'node.js', 'nodejs', 'javascript', 'typescript', 'react', 'fullstack',
   'full-stack', 'backend', 'qa', 'tester', 'it support', 'helpdesk',
-  'technical support', 'project coordinator',
+  'technical support', 'project coordinator', 'developer', 'programist',
 ];
 
 export class PracujPlParser extends BaseParser {
@@ -64,7 +90,7 @@ export class PracujPlParser extends BaseParser {
           const results = this.parseHtml(html);
           vacancies.push(...results);
           await page.close();
-          await this.sleep(1500);
+          await this.sleep(800);
         } catch (err) {
           logger.warn(`[PracujPL] ${url}: ${(err as Error).message}`);
         }
@@ -187,7 +213,9 @@ export class PracujPlParser extends BaseParser {
    */
   private isRelevantVacancy(title: string): boolean {
     const lower = title.toLowerCase();
-    return KEYWORDS.some((kw) => lower.includes(kw));
+    const hasJuniorLevel = KEYWORDS.some((kw) => lower.includes(kw));
+    const hasIT = IT_KEYWORDS.some((kw) => lower.includes(kw));
+    return hasJuniorLevel && hasIT;
   }
 
   private deduplicateByUrl(vacancies: RawVacancy[]): RawVacancy[] {

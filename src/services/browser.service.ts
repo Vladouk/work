@@ -1,4 +1,4 @@
-import { chromium, BrowserContext, Page } from 'playwright';
+import { chromium, BrowserContext, Page, Browser } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../infrastructure/logger';
@@ -29,19 +29,22 @@ export interface BrowserApplyResult {
 }
 
 const PROFILE_DIR = path.resolve(process.cwd(), 'browser-profile');
+const COOKIES_FILE = path.resolve(process.cwd(), 'browser-profile', 'cookies.json');
 
 export class BrowserService {
   private ctx: BrowserContext | null = null;
+  private browser: Browser | null = null;
 
-  // ── Get or create persistent context ──────────────────────────────────────
+  // ── Get or create context ──────────────────────────────────────────────────
   async getContext(): Promise<BrowserContext> {
-    // Check if existing context is still alive
+    // Reuse if alive
     if (this.ctx) {
       try {
-        this.ctx.pages(); // sync check — throws if closed
+        this.ctx.pages();
         return this.ctx;
       } catch {
         this.ctx = null;
+        this.browser = null;
       }
     }
 
@@ -49,32 +52,86 @@ export class BrowserService {
       fs.mkdirSync(PROFILE_DIR, { recursive: true });
     }
 
-    logger.info('[Browser] Запускаю Chromium з persistent profile...');
+    // Try persistent context first (has saved sessions)
+    try {
+      logger.info('[Browser] Запускаю Chromium з persistent profile...');
+      this.ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
+        headless: false,
+        slowMo: 300,
+        userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        viewport: null,
+        locale: 'uk-UA',
+        args: [
+          '--no-sandbox',
+          '--start-maximized',
+          '--disable-blink-features=AutomationControlled',
+          '--no-default-browser-check',
+          '--disable-session-crashed-bubble',
+          '--disable-infobars',
+          '--hide-crash-restore-bubble',
+        ],
+        handleSIGINT: false,
+        handleSIGTERM: false,
+        handleSIGHUP: false,
+      });
+      await this.ctx.addInitScript(
+        `Object.defineProperty(navigator, 'webdriver', { get: () => false });`,
+      );
+      logger.info('[Browser] ✅ Браузер готовий (persistent)');
+      return this.ctx;
+    } catch (err) {
+      logger.warn(`[Browser] Persistent profile недоступний: ${(err as Error).message.split('\n')[0]}`);
+      logger.info('[Browser] Fallback: звичайний запуск з cookies...');
+    }
 
-    this.ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
+    // Fallback: regular launch + restore cookies from file
+    this.browser = await chromium.launch({
       headless: false,
-      slowMo: 300,
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-        '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      viewport: null,
-      locale: 'uk-UA',
+      slowMo: 200,
       args: [
         '--no-sandbox',
         '--start-maximized',
         '--disable-blink-features=AutomationControlled',
       ],
-      handleSIGINT: false,
-      handleSIGTERM: false,
-      handleSIGHUP: false,
+    });
+
+    this.ctx = await this.browser.newContext({
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+        '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      viewport: null,
+      locale: 'uk-UA',
     });
 
     await this.ctx.addInitScript(
       `Object.defineProperty(navigator, 'webdriver', { get: () => false });`,
     );
 
-    logger.info('[Browser] ✅ Браузер готовий');
+    // Restore cookies if saved
+    if (fs.existsSync(COOKIES_FILE)) {
+      try {
+        const cookies = JSON.parse(fs.readFileSync(COOKIES_FILE, 'utf-8'));
+        await this.ctx.addCookies(cookies);
+        logger.info(`[Browser] ✅ Відновлено ${cookies.length} cookies`);
+      } catch {
+        logger.warn('[Browser] Не вдалось відновити cookies');
+      }
+    }
+
+    logger.info('[Browser] ✅ Браузер готовий (fallback)');
     return this.ctx;
+  }
+
+  // ── Save cookies after use ─────────────────────────────────────────────────
+  async saveCookies(): Promise<void> {
+    if (!this.ctx) return;
+    try {
+      const cookies = await this.ctx.cookies();
+      fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies, null, 2));
+      logger.info(`[Browser] 💾 Збережено ${cookies.length} cookies`);
+    } catch { /* ignore */ }
   }
 
   // ── Main entry point ───────────────────────────────────────────────────────
@@ -104,6 +161,9 @@ export class BrowserService {
       const result = await this.handlePage(page, profile, jobUrl);
 
       const screenshot = await page.screenshot({ type: 'png', fullPage: false }).catch(() => null);
+
+      // Save cookies for next time (in case persistent profile not available)
+      await this.saveCookies().catch(() => undefined);
 
       logger.info(`[Browser] DONE: ${result.method} success=${result.success}`);
       return { ...result, screenshotBase64: screenshot?.toString('base64') };
@@ -148,6 +208,8 @@ export class BrowserService {
 
     if (url.includes('pracuj.pl'))       return this.pracuj(page, p, originalUrl);
     if (url.includes('linkedin.com'))    return this.linkedin(page, p, originalUrl);
+    if (url.includes('bulldogjob.pl'))   return this.bulldogjob(page, p, originalUrl);
+    if (url.includes('teamquest.pl'))    return this.teamquest(page, p, originalUrl);
     if (url.includes('greenhouse.io'))   return this.greenhouse(page, p);
     if (url.includes('lever.co'))        return this.lever(page, p);
     if (url.includes('workable.com'))    return this.workable(page, p);
@@ -171,6 +233,11 @@ export class BrowserService {
       'button:has-text("Zaakceptuj")',
       'button:has-text("Akceptuję")',
       'button:has-text("Akceptuj")',
+      // TeamQuest / generic cookie banners
+      'button:has-text("I Przyjmij wszystko")',
+      'button:has-text("Przyjmij wszystko")',
+      'button:has-text("Przyjmij wszystkie")',
+      'button:has-text("Zaakceptuj wszystko")',
       // Generic English
       'button:has-text("Accept all")',
       'button:has-text("Accept All")',
@@ -200,76 +267,101 @@ export class BrowserService {
   ): Promise<BrowserApplyResult> {
     logger.info('[Browser] Pracuj.pl handler...');
 
-    // Wait a bit more for the page JS to render the inline form
-    await page.waitForTimeout(2000);
+    // Закриваємо попап перекладача якщо є
+    await page.keyboard.press('Escape').catch(() => undefined);
 
-    // --- STEP 1: Check if inline quick-apply form is already visible on page ---
-    // Pracuj.pl renders the form on the right side of the vacancy page when logged in.
-    // The submit button inside this form is "Aplikuj szybko".
-    const inlineFormSubmitSels = [
-      'button[data-test="quick-apply-button"]',
-      'button[data-test="button-quick-apply"]',
-      // text-based — most reliable since data-test changes often
-      'button:has-text("Aplikuj szybko")',
-      'button:has-text("Aplikuj")',
-    ];
+    // Встановлюємо viewport щоб форма справа відрендерилась
+    await page.setViewportSize({ width: 1280, height: 800 }).catch(() => undefined);
+    await page.waitForTimeout(3000);
+    await page.evaluate(() => window.scrollTo(0, 200));
+    await page.waitForTimeout(1500);
 
+    // --- STEP 1: Шукаємо кнопку Aplikuj через всі методи ---
     let submitBtn = null;
-    for (const sel of inlineFormSubmitSels) {
+
+    // Метод 1: getByRole — найнадійніший для Playwright
+    try {
+      const roleBtn = page.getByRole('button', { name: /aplikuj/i });
+      const count = await roleBtn.count();
+      if (count > 0) {
+        submitBtn = roleBtn.first();
+        logger.info(`[Browser] Pracuj: знайдено через getByRole, count=${count}`);
+      }
+    } catch { /* next */ }
+
+    // Метод 2: getByText
+    if (!submitBtn) {
       try {
-        // Use first() in case multiple exist; pick the visible one
-        const candidates = page.locator(sel);
-        const count = await candidates.count();
-        for (let i = 0; i < count; i++) {
-          const el = candidates.nth(i);
-          if (await el.isVisible({ timeout: 800 })) {
-            submitBtn = el;
-            logger.info(`[Browser] Pracuj inline form submit btn found: ${sel}[${i}]`);
-            break;
-          }
+        const textBtn = page.getByText(/aplikuj/i).first();
+        const tag = await textBtn.evaluate(el => el.tagName).catch(() => '');
+        if (tag === 'BUTTON' || tag === 'A') {
+          submitBtn = textBtn;
+          logger.info('[Browser] Pracuj: знайдено через getByText');
         }
-        if (submitBtn) break;
       } catch { /* next */ }
     }
 
-    // --- STEP 2: If inline form found — fill message and submit ---
-    if (submitBtn) {
-      return this.pracujFillAndSubmit(page, p, submitBtn, originalUrl);
+    // Метод 3: data-test атрибути
+    if (!submitBtn) {
+      for (const sel of [
+        '[data-test="quick-apply-button"]',
+        '[data-test="button-quick-apply"]',
+        '[data-test*="apply"]',
+      ]) {
+        try {
+          const el = page.locator(sel).first();
+          if (await el.count() > 0) {
+            submitBtn = el;
+            logger.info(`[Browser] Pracuj: знайдено через ${sel}`);
+            break;
+          }
+        } catch { /* next */ }
+      }
     }
 
-    // --- STEP 3: No inline form — maybe page not loaded or not logged in ---
-    // Log all visible button texts for debugging
-    const btns = await page.$$eval('button', (els) =>
-      els.filter((e) => !!(e as { offsetParent?: unknown }).offsetParent)
-        .map((e) => e.textContent?.trim() ?? '')
-        .filter((t) => t.length > 0)
-        .slice(0, 25),
-    );
-    logger.warn(`[Browser] Pracuj: inline form not found. Visible buttons: ${btns.join(' | ')}`);
+    // Метод 4: JS evaluate — шукає по всьому DOM без фільтрів
+    if (!submitBtn) {
+      const allBtns = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('button, a[role="button"]'))
+          .map(b => ({ text: b.textContent?.trim() ?? '', tag: b.tagName }))
+          .filter(b => b.text.length > 0),
+      );
+      logger.warn(`[Browser] Pracuj: всі елементи: ${allBtns.map(b => b.text).slice(0, 30).join(' | ')}`);
 
-    // Check if logged out
-    const isLoggedOut = await page.locator('[data-test="link-login"]').isVisible({ timeout: 1000 }).catch(() => false);
-    if (isLoggedOut) {
+      const clicked = await page.evaluate(() => {
+        const all = Array.from(document.querySelectorAll('button, a[role="button"], a'));
+        const btn = all.find(b => /aplikuj/i.test(b.textContent ?? ''));
+        if (btn) {
+          (btn as HTMLElement).click();
+          return btn.textContent?.trim() ?? 'clicked';
+        }
+        return null;
+      });
+
+      if (clicked) {
+        logger.info(`[Browser] Pracuj: JS click на "${clicked}"`);
+        await page.waitForTimeout(3000);
+        return {
+          success: true,
+          method: 'Pracuj.pl Quick Apply',
+          message: `✅ *Відгук відправлено на Pracuj\\.pl\\!*`,
+        };
+      }
+
+      // Нічого не знайшли
       return {
         success: false,
         method: 'Pracuj.pl',
         message:
-          `🔐 *Залогінься на Pracuj\\.pl*\n\n` +
-          `Браузер відкритий — увійди в акаунт\\.\n` +
-          `Після логіну натисни "📨 Авто\\-відгук" ще раз\\.\n` +
-          `Сесія збережеться автоматично\\.`,
+          `⚠️ Форму не знайдено на Pracuj\\.pl\\.\n\n` +
+          `Браузер відкритий — натисни *"Aplikuj szybko"* вручну\\.\n\n` +
+          `📋 Дані:\n*Ім'я:* ${p.fullName}\n*Email:* ${p.email}\n*Телефон:* ${p.phone}\n\n` +
+          `🔗 [Відкрити вакансію](${originalUrl})`,
       };
     }
 
-    return {
-      success: false,
-      method: 'Pracuj.pl',
-      message:
-        `⚠️ Форму не знайдено на Pracuj\\.pl\\.\n\n` +
-        `Браузер відкритий — натисни *"Aplikuj szybko"* вручну\\.\n\n` +
-        `📋 Дані:\n*Ім'я:* ${p.fullName}\n*Email:* ${p.email}\n*Телефон:* ${p.phone}\n\n` +
-        `🔗 [Відкрити вакансію](${originalUrl})`,
-    };
+    // --- STEP 2: Якщо кнопку знайшли через методи 1-3 — заповнюємо і відправляємо ---
+    return this.pracujFillAndSubmit(page, p, submitBtn, originalUrl);
   }
 
   // ── Pracuj.pl: fill message and submit inline form ─────────────────────────
@@ -330,6 +422,9 @@ export class BrowserService {
     await submitBtn.click();
     await page.waitForTimeout(3500);
 
+    // Обробляємо "Pytania od pracodawcy" — додаткові питання роботодавця
+    await this.handlePracujQuestions(page, p);
+
     // Check for success confirmation
     const successSels = [
       '[data-test*="success"]',
@@ -368,6 +463,66 @@ export class BrowserService {
     // Redirected to external ATS
     await this.acceptCookies(page);
     return this.generic(page, p, originalUrl);
+  }
+
+  // ── Pracuj.pl: обробка питань роботодавця ────────────────────────────────
+  private async handlePracujQuestions(page: Page, p: FillFormProfile): Promise<void> {
+    // Перевіряємо чи відкрилась сторінка з питаннями
+    const hasQuestions = await page.locator('text=Pytania od pracodawcy').isVisible({ timeout: 3000 }).catch(() => false);
+    if (!hasQuestions) return;
+
+    logger.info('[Browser] Pracuj: знайдено питання від роботодавця, заповнюю...');
+
+    // Заповнюємо dropdown'и — обираємо перший варіант у кожному
+    const selects = page.locator('select');
+    const selectCount = await selects.count();
+    for (let i = 0; i < selectCount; i++) {
+      try {
+        const sel = selects.nth(i);
+        if (!await sel.isVisible({ timeout: 500 })) continue;
+        const options = await sel.locator('option').all();
+        // Пропускаємо перший варіант "wybierz" (placeholder), беремо другий
+        if (options.length > 1) {
+          const val = await options[1].getAttribute('value');
+          if (val) await sel.selectOption(val);
+        }
+      } catch { /* skip */ }
+    }
+
+    // Заповнюємо зарплатні очікування якщо є окремий input
+    if (p.salaryExpectation) {
+      try {
+        const salaryInput = page.locator('input[name*="salary" i], input[placeholder*="wynagrodzeni" i]').first();
+        if (await salaryInput.isVisible({ timeout: 500 })) {
+          await salaryInput.fill(p.salaryExpectation);
+        }
+      } catch { /* skip */ }
+    }
+
+    // Обираємо чекбокс "rozmowa wideo" якщо є
+    try {
+      const videoCheckbox = page.locator('input[type="checkbox"]').first();
+      if (await videoCheckbox.isVisible({ timeout: 500 })) {
+        await videoCheckbox.check();
+      }
+    } catch { /* skip */ }
+
+    await page.waitForTimeout(500);
+
+    // Натискаємо "Wyślij odpowiedzi" або "Pomiń"
+    const sendBtn = page.getByRole('button', { name: /wyślij odpowiedzi/i });
+    const skipBtn = page.getByRole('button', { name: /pomiń/i }).or(page.getByText(/pomiń/i));
+
+    if (await sendBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+      logger.info('[Browser] Pracuj: натискаю "Wyślij odpowiedzi"');
+      await sendBtn.click();
+    } else if (await skipBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+      logger.info('[Browser] Pracuj: натискаю "Pomiń"');
+      await skipBtn.first().click();
+    }
+
+    await page.waitForTimeout(2000);
+    logger.info('[Browser] Pracuj: питання оброблено');
   }
 
   // ── LinkedIn ───────────────────────────────────────────────────────────────
@@ -650,6 +805,163 @@ export class BrowserService {
         }
       } catch { /* ignore */ }
     }
+  }
+
+  // ── TeamQuest ───────────────────────────────────────────────────────────────
+  private async teamquest(page: Page, p: FillFormProfile, originalUrl: string): Promise<BrowserApplyResult> {
+    logger.info('[Browser] TeamQuest handler...');
+    await this.acceptCookies(page);
+    await page.waitForTimeout(2000);
+
+    if (!p.cvLocalPath) {
+      return { success: false, method: 'TeamQuest', message: `⚠️ CV не знайдено\\. Завантаж CV через /cv і спробуй знову\\.` };
+    }
+
+    let uploaded = false;
+
+    // Підхід 1: Знаходимо прихований input[type=file] і передаємо файл напряму
+    // Це працює якщо кнопка "Wyślij CV" є label для прихованого input
+    try {
+      const fileInput = page.locator('input[type="file"]').first();
+      // Робимо input видимим через JS щоб Playwright міг взаємодіяти
+      await page.evaluate(() => {
+        const input = document.querySelector('input[type="file"]') as HTMLElement;
+        if (input) {
+          input.style.display = 'block';
+          input.style.opacity = '1';
+          input.style.position = 'fixed';
+          input.style.top = '0';
+          input.style.left = '0';
+          input.style.zIndex = '99999';
+        }
+      });
+      await page.waitForTimeout(300);
+      await fileInput.setInputFiles(p.cvLocalPath);
+      logger.info('[Browser] TeamQuest: ✅ CV через input[type=file] (made visible)');
+      uploaded = true;
+      await page.waitForTimeout(2000);
+    } catch (err) {
+      logger.warn(`[Browser] TeamQuest input visible: ${(err as Error).message.substring(0, 80)}`);
+    }
+
+    // Підхід 2: filechooser через клік кнопки
+    if (!uploaded) {
+      const uploadBtn = page.locator('button:has-text("Wyślij CV")').first();
+      if (await uploadBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+        try {
+          const [fileChooser] = await Promise.all([
+            page.waitForEvent('filechooser', { timeout: 8000 }),
+            uploadBtn.click(),
+          ]);
+          await fileChooser.setFiles(p.cvLocalPath);
+          logger.info('[Browser] TeamQuest: ✅ CV через filechooser');
+          uploaded = true;
+          await page.waitForTimeout(2000);
+        } catch (err) {
+          logger.warn(`[Browser] TeamQuest filechooser: ${(err as Error).message.substring(0, 80)}`);
+        }
+      }
+    }
+
+    if (!uploaded) {
+      return {
+        success: false,
+        method: 'TeamQuest',
+        message: `⚠️ Не вдалось завантажити CV\\.\n\n📧 Надішли CV вручну на praca@teamquest.pl\n\n🔗 [Відкрий вакансію](${originalUrl})`,
+      };
+    }
+
+    // Після upload TeamQuest сам редиректить на форму з полями
+    // Чекаємо редирект і заповнюємо поля
+    logger.info('[Browser] TeamQuest: чекаємо редирект після upload CV...');
+    await page.waitForTimeout(3000);
+
+    const afterUploadUrl = page.url();
+    logger.info(`[Browser] TeamQuest після upload: ${afterUploadUrl}`);
+
+    // Заповнюємо поля форми якщо вони є
+    await this.fillInputs(page, p);
+    await page.waitForTimeout(500);
+
+    const finalUrl = page.url();
+    logger.info(`[Browser] TeamQuest final URL: ${finalUrl}`);
+
+    return {
+      success: true,
+      method: 'TeamQuest',
+      message: `✅ *CV завантажено на TeamQuest\\!*\n\n_Браузер відкритий — заповни решту полів і натисни Submit\\._`,
+    };
+  }
+
+  // ── BulldogJob ─────────────────────────────────────────────────────────────
+  private async bulldogjob(page: Page, p: FillFormProfile, originalUrl: string): Promise<BrowserApplyResult> {
+    logger.info('[Browser] BulldogJob handler...');
+
+    await page.setViewportSize({ width: 1280, height: 800 }).catch(() => undefined);
+    await page.waitForTimeout(2000);
+
+    // Реєструємо listener ДО кліку щоб не пропустити нову вкладку
+    const newPagePromise = page.context().waitForEvent('page', { timeout: 8000 });
+
+    // Натискаємо Aplikuj
+    let clicked = false;
+    try {
+      const applyBtn = page.getByRole('button', { name: /aplikuj/i })
+        .or(page.getByRole('link', { name: /aplikuj/i }))
+        .first();
+      if (await applyBtn.isVisible({ timeout: 3000 })) {
+        await applyBtn.click();
+        clicked = true;
+        logger.info('[Browser] BulldogJob: кнопка Aplikuj натиснута');
+      }
+    } catch { /* next */ }
+
+    if (!clicked) {
+      clicked = !!(await page.evaluate(() => {
+        const el = Array.from(document.querySelectorAll('a, button'))
+          .find(e => /aplikuj/i.test(e.textContent ?? ''));
+        if (el) { (el as HTMLElement).click(); return true; }
+        return false;
+      }));
+    }
+
+    if (!clicked) {
+      newPagePromise.catch(() => undefined);
+      return {
+        success: false,
+        method: 'BulldogJob',
+        message: `⚠️ Кнопку "Aplikuj" не знайдено\\.\n\n🔗 [Вакансія](${originalUrl})`,
+      };
+    }
+
+    // Чекаємо нову вкладку роботодавця
+    let targetPage = page;
+    try {
+      const newPage = await newPagePromise;
+      await newPage.waitForLoadState('domcontentloaded', { timeout: 15000 });
+      await this.acceptCookies(newPage);
+      logger.info(`[Browser] BulldogJob: нова вкладка: ${newPage.url()}`);
+      targetPage = newPage;
+    } catch {
+      await page.waitForTimeout(2000);
+      logger.warn('[Browser] BulldogJob: нова вкладка не відкрилась, поточна: ' + page.url());
+    }
+
+    await this.acceptCookies(page);
+    const newUrl = targetPage.url();
+    logger.info(`[Browser] BulldogJob після кліку: ${newUrl}`);
+
+    // Якщо залишились на BulldogJob thank-you — нову вкладку не перехопили
+    if (newUrl.includes('bulldogjob.pl') && newUrl.includes('thank-you')) {
+      return {
+        success: false,
+        method: 'BulldogJob',
+        message: `⚠️ Не вдалось перехопити вкладку роботодавця\\.\n\n🔗 [Подай вручну](${originalUrl})`,
+      };
+    }
+
+    // Якщо нова вкладка — teamquest або інший ATS
+    return this.handlePage(targetPage, p, originalUrl);
   }
 
   // ── ATS Fillers ────────────────────────────────────────────────────────────
