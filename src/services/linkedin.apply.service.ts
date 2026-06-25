@@ -31,37 +31,45 @@ export interface LinkedInApplyResult {
 }
 
 export class LinkedInApplyService {
-  // ── Перевірка логіну ───────────────────────────────────────────────────────
+  // ── Перевірка логіну (через cookies.json — без запуску браузера) ───────────
   async checkLogin(): Promise<{ loggedIn: boolean; name?: string }> {
-    let ctx: BrowserContext | null = null;
     try {
-      ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-        headless: true,
-        args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      });
-
-      const page = await ctx.newPage();
-      await page.goto(`${BASE}/feed/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await page.waitForTimeout(2000);
-
-      const nameEl = page.locator('.global-nav__me-photo, .feed-identity-module__actor-meta').first();
-      const loggedIn = await nameEl.isVisible({ timeout: 3000 }).catch(() => false);
-
-      if (loggedIn) {
-        const name = await page.locator('.feed-identity-module__actor-meta strong, [data-test="identity-actor-name"]')
-          .first().textContent().catch(() => 'LinkedIn User');
-        await page.close();
-        return { loggedIn: true, name: name?.trim() };
+      const cookiesPath = path.resolve(process.cwd(), 'browser-profile', 'cookies.json');
+      if (!fs.existsSync(cookiesPath)) {
+        return { loggedIn: false };
       }
 
-      await page.close();
-      return { loggedIn: false };
+      const raw = fs.readFileSync(cookiesPath, 'utf-8');
+      const cookies: Array<{ name: string; domain: string; expires?: number; value: string }> = JSON.parse(raw);
+
+      const now = Date.now() / 1000;
+
+      // li_at — головний auth-токен LinkedIn
+      const liAt = cookies.find(
+        c => c.name === 'li_at' && c.domain.includes('linkedin.com'),
+      );
+
+      if (!liAt || !liAt.value) {
+        return { loggedIn: false };
+      }
+
+      // Перевіряємо термін дії
+      if (liAt.expires && liAt.expires < now) {
+        logger.warn('[LinkedIn] li_at cookie expired');
+        return { loggedIn: false };
+      }
+
+      // JSESSIONID — наявність підтверджує активну сесію
+      const session = cookies.find(
+        c => c.name === 'JSESSIONID' && c.domain.includes('linkedin.com'),
+      );
+
+      logger.info('[LinkedIn] ✅ li_at знайдено — залогінений');
+      return { loggedIn: true, name: session ? 'LinkedIn User' : 'LinkedIn User' };
+
     } catch (err) {
       logger.warn(`[LinkedIn] checkLogin error: ${(err as Error).message}`);
       return { loggedIn: false };
-    } finally {
-      await ctx?.close().catch(() => undefined);
     }
   }
 
@@ -91,12 +99,26 @@ export class LinkedInApplyService {
 
       const page = await ctx.newPage();
 
-      // Перевіряємо логін
+      // Перевіряємо логін через cookies замість навігації
+      const cookiesPath = path.resolve(process.cwd(), 'browser-profile', 'cookies.json');
+      if (fs.existsSync(cookiesPath)) {
+        try {
+          const raw = fs.readFileSync(cookiesPath, 'utf-8');
+          const savedCookies = JSON.parse(raw);
+          await ctx.addCookies(savedCookies.filter((c: { name: string }) => c.name));
+        } catch { /* proceed without */ }
+      }
+
+      // Швидка перевірка логіну
       await page.goto(`${BASE}/feed/`, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await page.waitForTimeout(2000);
 
-      const isLoggedIn = await page.locator('.global-nav__me, img.global-nav__me-photo')
-        .isVisible({ timeout: 3000 }).catch(() => false);
+      const currentUrl = page.url();
+      const isLoggedIn = !currentUrl.includes('/login') &&
+        !currentUrl.includes('/checkpoint') &&
+        !currentUrl.includes('/authwall') &&
+        (await page.locator('.global-nav__me, img.global-nav__me-photo, .feed-identity-module')
+          .isVisible({ timeout: 5000 }).catch(() => false));
 
       if (!isLoggedIn) {
         await page.close();
