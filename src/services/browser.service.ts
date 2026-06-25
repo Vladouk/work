@@ -273,7 +273,7 @@ export class BrowserService {
     // Встановлюємо viewport щоб форма справа відрендерилась
     await page.setViewportSize({ width: 1280, height: 800 }).catch(() => undefined);
     await page.waitForTimeout(3000);
-    await page.evaluate(() => window.scrollTo(0, 200));
+    await page.evaluate('window.scrollTo(0, 200)');
     await page.waitForTimeout(1500);
 
     // --- STEP 1: Шукаємо кнопку Aplikuj через всі методи ---
@@ -321,22 +321,17 @@ export class BrowserService {
 
     // Метод 4: JS evaluate — шукає по всьому DOM без фільтрів
     if (!submitBtn) {
-      const allBtns = await page.evaluate(() =>
-        Array.from(document.querySelectorAll('button, a[role="button"]'))
-          .map(b => ({ text: b.textContent?.trim() ?? '', tag: b.tagName }))
-          .filter(b => b.text.length > 0),
-      );
+      const allBtns = await page.evaluate('Array.from(document.querySelectorAll("button, a[role=\'button\']")).map(b => ({ text: b.textContent?.trim() ?? "", tag: b.tagName })).filter(b => b.text.length > 0)') as Array<{text: string; tag: string}>;
       logger.warn(`[Browser] Pracuj: всі елементи: ${allBtns.map(b => b.text).slice(0, 30).join(' | ')}`);
 
-      const clicked = await page.evaluate(() => {
-        const all = Array.from(document.querySelectorAll('button, a[role="button"], a'));
-        const btn = all.find(b => /aplikuj/i.test(b.textContent ?? ''));
-        if (btn) {
-          (btn as HTMLElement).click();
-          return btn.textContent?.trim() ?? 'clicked';
-        }
-        return null;
-      });
+      const clicked = await page.evaluate(`
+        (function() {
+          var all = Array.from(document.querySelectorAll('button, a[role="button"], a'));
+          var btn = all.find(function(b) { return /aplikuj/i.test(b.textContent || ''); });
+          if (btn) { btn.click(); return btn.textContent.trim() || 'clicked'; }
+          return null;
+        })()
+      `) as string | null;
 
       if (clicked) {
         logger.info(`[Browser] Pracuj: JS click на "${clicked}"`);
@@ -422,6 +417,37 @@ export class BrowserService {
     await submitBtn.click();
     await page.waitForTimeout(3500);
 
+    // --- Pracuj може показати попередження "Pracodawca prosi o wypełnienie swojego formularza" ---
+    // Треба клікнути "Kontynuuj aplikowanie" щоб продовжити
+    const kontynuujSels = [
+      'button:has-text("Kontynuuj aplikowanie")',
+      'a:has-text("Kontynuuj aplikowanie")',
+      '[data-test*="continue"]',
+    ];
+    for (const sel of kontynuujSels) {
+      try {
+        const btn = page.locator(sel).first();
+        if (await btn.isVisible({ timeout: 3000 })) {
+          logger.info('[Browser] Pracuj: кліку "Kontynuuj aplikowanie"');
+          await btn.click();
+          await page.waitForTimeout(3000);
+          break;
+        }
+      } catch { /* next */ }
+    }
+
+    // --- Перевіряємо чи відбувся редирект на зовнішній сайт ---
+    const afterClickUrl = page.url();
+    logger.info(`[Browser] Pracuj після кліку: ${afterClickUrl}`);
+
+    if (!afterClickUrl.includes('pracuj.pl')) {
+      // Редирект на зовнішній ATS — обробляємо
+      logger.info('[Browser] Pracuj: редирект на зовнішній сайт, обробляю...');
+      await this.acceptCookies(page);
+      await page.waitForTimeout(1500);
+      return this.handleExternalAts(page, p, afterClickUrl, originalUrl);
+    }
+
     // Обробляємо "Pytania od pracodawcy" — додаткові питання роботодавця
     await this.handlePracujQuestions(page, p);
 
@@ -460,9 +486,156 @@ export class BrowserService {
       };
     }
 
-    // Redirected to external ATS
-    await this.acceptCookies(page);
-    return this.generic(page, p, originalUrl);
+    // Redirected to external ATS after questions
+    const finalRedirectUrl = page.url();
+    if (!finalRedirectUrl.includes('pracuj.pl')) {
+      await this.acceptCookies(page);
+      return this.handleExternalAts(page, p, finalRedirectUrl, originalUrl);
+    }
+
+    return {
+      success: false,
+      method: 'Pracuj.pl',
+      message:
+        `📋 *Форму відкрито на Pracuj\\.pl*\n\n` +
+        `${messageFilled ? '✅ Повідомлення заповнено\\.' : '⚠️ Заповни "Wiadomość do pracodawcy"\\.'}\n\n` +
+        `Натисни *Wyślij* у браузері вручну\\.\n\n` +
+        `*Ім'я:* ${p.fullName}\n*Email:* ${p.email}`,
+    };
+  }
+
+  // ── Обробка зовнішнього ATS після редиректу з Pracuj.pl ───────────────────
+  private async handleExternalAts(
+    page: Page,
+    p: FillFormProfile,
+    currentUrl: string,
+    originalUrl: string,
+  ): Promise<BrowserApplyResult> {
+    logger.info(`[Browser] External ATS: ${currentUrl}`);
+
+    // Якщо відомий ATS — делегуємо відповідному хендлеру
+    if (currentUrl.includes('greenhouse.io'))   return this.greenhouse(page, p);
+    if (currentUrl.includes('lever.co'))        return this.lever(page, p);
+    if (currentUrl.includes('workable.com'))    return this.workable(page, p);
+    if (currentUrl.includes('recruitee.com'))   return this.recruitee(page, p);
+    if (currentUrl.includes('traffit.com'))     return this.traffit(page, p);
+    if (currentUrl.includes('smartrecruiters')) return this.smartrecruiters(page, p);
+    if (currentUrl.includes('teamtailor'))      return this.teamtailor(page, p);
+    if (currentUrl.includes('ashbyhq.com'))     return this.ashby(page, p);
+
+    // Невідомий зовнішній сайт — universal flow:
+    // 1. Клікаємо "Apply with CV" якщо є вибір
+    const applyWithCvSels = [
+      'button:has-text("Apply with CV")',
+      'a:has-text("Apply with CV")',
+      '[data-test*="apply-with-cv"]',
+    ];
+    for (const sel of applyWithCvSels) {
+      try {
+        const btn = page.locator(sel).first();
+        if (await btn.isVisible({ timeout: 2000 })) {
+          logger.info(`[Browser] External: клікаю "Apply with CV"`);
+          await btn.click();
+          await page.waitForTimeout(2500);
+          break;
+        }
+      } catch { /* next */ }
+    }
+
+    // 2. Заповнюємо поля форми
+    await this.fillExternalForm(page, p);
+
+    // 3. Завантажуємо CV
+    if (p.cvLocalPath && fs.existsSync(p.cvLocalPath)) {
+      await this.upload(page, p.cvLocalPath);
+    }
+
+    // 4. Приймаємо чекбокси згоди (RODO/Privacy)
+    await this.acceptConsents(page);
+
+    // 5. Клікаємо Submit / Apply now
+    const submitSels = [
+      'button:has-text("Apply now")',
+      'button:has-text("Wyślij")',
+      'button:has-text("Submit")',
+      'button[type="submit"]',
+      'input[type="submit"]',
+    ];
+    let submitted = false;
+    for (const sel of submitSels) {
+      try {
+        const btn = page.locator(sel).first();
+        if (await btn.isVisible({ timeout: 1500 })) {
+          const disabled = await btn.isDisabled().catch(() => false);
+          if (!disabled) {
+            await btn.scrollIntoViewIfNeeded().catch(() => undefined);
+            await btn.click();
+            submitted = true;
+            logger.info(`[Browser] External: submitted via ${sel}`);
+            await page.waitForTimeout(3000);
+            break;
+          }
+        }
+      } catch { /* next */ }
+    }
+
+    if (submitted) {
+      return {
+        success: true,
+        method: 'External ATS',
+        message: `✅ *Відгук відправлено\\!*\n\n🔗 [Вакансія](${originalUrl})`,
+      };
+    }
+
+    return {
+      success: false,
+      method: 'External ATS',
+      message:
+        `📋 *Форму заповнено на зовнішньому сайті*\n\n` +
+        `Натисни *Apply now* / *Submit* у браузері вручну\\.\n\n` +
+        `*Ім'я:* ${p.fullName}\n*Email:* ${p.email}\n*Телефон:* ${p.phone}`,
+    };
+  }
+
+  // ── Заповнення полів зовнішньої форми ─────────────────────────────────────
+  private async fillExternalForm(page: Page, p: FillFormProfile): Promise<void> {
+    await this.ft(page, ['input[name*="first" i]', 'input[id*="first" i]', 'input[placeholder*="First name" i]', 'input[autocomplete="given-name"]'], p.firstName);
+    await this.ft(page, ['input[name*="last" i]', 'input[id*="last" i]', 'input[placeholder*="Surname" i]', 'input[autocomplete="family-name"]'], p.lastName);
+    await this.ft(page, ['input[name*="name"]', 'input[placeholder*="Full name" i]'], p.fullName);
+    await this.ft(page, ['input[type="email"]', 'input[name*="email" i]', 'input[id*="email" i]'], p.email);
+    await this.ft(page, ['input[type="tel"]', 'input[name*="phone" i]', 'input[id*="phone" i]'], p.phone);
+    if (p.linkedin) await this.ft(page, ['input[name*="linkedin" i]', 'input[placeholder*="LinkedIn" i]', 'input[id*="linkedin" i]'], p.linkedin);
+    if (p.github) await this.ft(page, ['input[name*="github" i]', 'input[placeholder*="GitHub" i]'], p.github);
+    await this.ft(page, ['textarea[name*="cover" i]', 'textarea[name*="message" i]', 'textarea[id*="cover" i]', 'textarea'], p.coverLetter);
+
+    // Work mode checkboxes (Remote, Hybrid, Office) — відмічаємо Remote якщо є
+    try {
+      const remoteCheckbox = page.locator('input[type="checkbox"] + label:has-text("Remote"), label:has-text("Remote") input[type="checkbox"]').first();
+      if (await remoteCheckbox.isVisible({ timeout: 800 })) {
+        const checked = await remoteCheckbox.isChecked().catch(() => false);
+        if (!checked) await remoteCheckbox.check();
+      }
+    } catch { /* skip */ }
+  }
+
+  // ── Автоматично приймаємо чекбокси згоди ─────────────────────────────────
+  private async acceptConsents(page: Page): Promise<void> {
+    try {
+      // Приймаємо всі обов'язкові чекбокси (RODO, consent)
+      const checkboxes = page.locator('input[type="checkbox"]');
+      const count = await checkboxes.count();
+      for (let i = 0; i < count; i++) {
+        try {
+          const cb = checkboxes.nth(i);
+          if (!await cb.isVisible({ timeout: 400 })) continue;
+          const checked = await cb.isChecked().catch(() => false);
+          if (!checked) {
+            await cb.check();
+            logger.info(`[Browser] Consent checkbox ${i} checked`);
+          }
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
   }
 
   // ── Pracuj.pl: обробка питань роботодавця ────────────────────────────────
@@ -824,17 +997,19 @@ export class BrowserService {
     try {
       const fileInput = page.locator('input[type="file"]').first();
       // Робимо input видимим через JS щоб Playwright міг взаємодіяти
-      await page.evaluate(() => {
-        const input = document.querySelector('input[type="file"]') as HTMLElement;
-        if (input) {
-          input.style.display = 'block';
-          input.style.opacity = '1';
-          input.style.position = 'fixed';
-          input.style.top = '0';
-          input.style.left = '0';
-          input.style.zIndex = '99999';
-        }
-      });
+      await page.evaluate(`
+        (function() {
+          var input = document.querySelector('input[type="file"]');
+          if (input) {
+            input.style.display = 'block';
+            input.style.opacity = '1';
+            input.style.position = 'fixed';
+            input.style.top = '0';
+            input.style.left = '0';
+            input.style.zIndex = '99999';
+          }
+        })()
+      `);
       await page.waitForTimeout(300);
       await fileInput.setInputFiles(p.cvLocalPath);
       logger.info('[Browser] TeamQuest: ✅ CV через input[type=file] (made visible)');
@@ -917,12 +1092,14 @@ export class BrowserService {
     } catch { /* next */ }
 
     if (!clicked) {
-      clicked = !!(await page.evaluate(() => {
-        const el = Array.from(document.querySelectorAll('a, button'))
-          .find(e => /aplikuj/i.test(e.textContent ?? ''));
-        if (el) { (el as HTMLElement).click(); return true; }
-        return false;
-      }));
+      clicked = !!(await page.evaluate(`
+        (function() {
+          var el = Array.from(document.querySelectorAll('a, button'))
+            .find(function(e) { return /aplikuj/i.test(e.textContent || ''); });
+          if (el) { el.click(); return true; }
+          return false;
+        })()
+      `));
     }
 
     if (!clicked) {
