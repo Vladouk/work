@@ -898,20 +898,12 @@ export class BrowserService {
   // ── Автоматично приймаємо чекбокси згоди ─────────────────────────────────
   private async acceptConsents(page: Page): Promise<void> {
     try {
-      // Приймаємо всі обов'язкові чекбокси (RODO, consent)
-      const checkboxes = page.locator('input[type="checkbox"]');
-      const count = await checkboxes.count();
-      for (let i = 0; i < count; i++) {
-        try {
-          const cb = checkboxes.nth(i);
-          if (!await cb.isVisible({ timeout: 400 })) continue;
-          const checked = await cb.isChecked().catch(() => false);
-          if (!checked) {
-            await cb.check();
-            logger.info(`[Browser] Consent checkbox ${i} checked`);
-          }
-        } catch { /* skip */ }
-      }
+      // Через evaluate — не залежить від видимості/позиції
+      await page.evaluate(`
+        Array.from(document.querySelectorAll('input[type="checkbox"]'))
+          .forEach(function(cb) { if (!cb.checked) cb.click(); });
+      `);
+      logger.info('[Browser] Consent checkboxes відмічено через JS');
     } catch { /* skip */ }
   }
 
@@ -1474,30 +1466,66 @@ export class BrowserService {
     logger.info('[Browser] SmartRecruiters handler...');
     await page.waitForTimeout(2000);
 
-    // КРОК 1: Клікаємо кнопку Apply/Jestem zainteresowany
-    const applyBtns = [
-      'button:has-text("Jestem zainteresowany")',
-      'button:has-text("Jestem zainteresowana")',
-      'button:has-text("Apply now")',
-      'button:has-text("Apply Now")',
-      'button:has-text("Apply")',
-      '[data-test="button-apply"]',
-      '[data-testid="apply-button"]',
+    // КРОК 1: Спочатку закриваємо ВСІ cookie/privacy банери
+    await this.acceptCookies(page);
+    await page.waitForTimeout(500);
+
+    // КРОК 2: Клікаємо "Jestem zainteresowany(a)" через JS (без scroll, без перекриття)
+    const applyTexts = [
+      'Jestem zainteresowany', 'Jestem zainteresowana',
+      'Apply now', 'Apply Now', 'Apply',
     ];
-    for (const sel of applyBtns) {
+
+    let applyClicked = false;
+    for (const text of applyTexts) {
       try {
-        const btn = page.locator(sel).first();
-        if (await btn.isVisible({ timeout: 1500 })) {
-          const label = await btn.textContent().catch(() => sel);
-          logger.info(`[Browser] SmartRecruiters: клікаю "${label?.trim()}"`);
-          await btn.click();
+        // Шукаємо через getByRole — не залежить від позиції
+        const btn = page.getByRole('button', { name: new RegExp(text, 'i') }).first();
+        if (await btn.isVisible({ timeout: 1000 })) {
+          logger.info(`[Browser] SmartRecruiters: клікаю через JS: "${text}"`);
+          // Клікаємо через evaluate — обходить будь-яке перекриття
+          await btn.evaluate('(el) => el.click()');
+          applyClicked = true;
           await page.waitForTimeout(3000);
           break;
         }
       } catch { /* next */ }
     }
 
-    // КРОК 2: Може відкритись нова вкладка з формою
+    // Fallback: JS пошук по тексту
+    if (!applyClicked) {
+      const clicked = await page.evaluate(`
+        (function() {
+          var btns = Array.from(document.querySelectorAll('button, a'));
+          var texts = ['Jestem zainteresowany', 'Jestem zainteresowana', 'Apply now', 'Apply'];
+          for (var i = 0; i < btns.length; i++) {
+            var t = (btns[i].textContent || '').trim();
+            for (var j = 0; j < texts.length; j++) {
+              if (t.toLowerCase().includes(texts[j].toLowerCase())) {
+                btns[i].click();
+                return t;
+              }
+            }
+          }
+          return null;
+        })()
+      `).catch(() => null) as string | null;
+
+      if (clicked) {
+        logger.info(`[Browser] SmartRecruiters: JS клік: "${clicked}"`);
+        applyClicked = true;
+        await page.waitForTimeout(3000);
+      }
+    }
+
+    if (!applyClicked) {
+      logger.warn('[Browser] SmartRecruiters: Apply кнопку не знайдено');
+    }
+
+    // КРОК 3: Знову закриваємо cookie якщо з\'явились після кліку
+    await this.acceptCookies(page);
+
+    // КРОК 4: Перевіряємо нові вкладки
     const allPages = page.context().pages();
     const newTab = allPages.find(p2 => p2 !== page && !p2.url().includes('about:blank'));
     let activePage = page;
@@ -1511,48 +1539,45 @@ export class BrowserService {
 
     logger.info(`[Browser] SmartRecruiters: сторінка: ${activePage.url()}`);
 
-    // КРОК 3: Заповнюємо форму
+    // КРОК 5: Заповнюємо форму через smart filler
     logger.info('[Browser] SmartRecruiters: заповнюю поля...');
-    await this.f(activePage, 'input[name="firstName"]', p.firstName);
-    logger.info(`[Browser] SmartRecruiters: firstName = "${p.firstName}"`);
-    await this.f(activePage, 'input[name="lastName"]', p.lastName);
-    logger.info(`[Browser] SmartRecruiters: lastName = "${p.lastName}"`);
-    await this.f(activePage, 'input[name="email"]', p.email);
-    logger.info(`[Browser] SmartRecruiters: email = "${p.email}"`);
-    await this.f(activePage, 'input[name="phoneNumber"]', p.phone);
-    logger.info(`[Browser] SmartRecruiters: phone = "${p.phone}"`);
-    await this.f(activePage, 'textarea[name="message"]', p.coverLetter);
-    logger.info('[Browser] SmartRecruiters: cover letter заповнено');
+    await this.fillExternalForm(activePage, p);
 
-    // КРОК 4: CV
+    // Додаткові специфічні поля SmartRecruiters
+    await this.f(activePage, 'input[name="firstName"]', p.firstName);
+    await this.f(activePage, 'input[name="lastName"]', p.lastName);
+    await this.f(activePage, 'input[name="email"]', p.email);
+    await this.f(activePage, 'input[name="phoneNumber"]', p.phone);
+    await this.f(activePage, 'textarea[name="message"]', p.coverLetter);
+    logger.info('[Browser] SmartRecruiters: поля заповнено');
+
+    // КРОК 6: CV
     if (p.cvLocalPath && fs.existsSync(p.cvLocalPath)) {
-      logger.info(`[Browser] SmartRecruiters: завантажую CV...`);
+      logger.info('[Browser] SmartRecruiters: завантажую CV...');
       await this.upload(activePage, p.cvLocalPath);
     }
 
-    // КРОК 5: Consent checkboxes
-    await this.acceptConsents(activePage);
+    // КРОК 7: Consent checkboxes (через evaluate щоб не перекривались)
+    await activePage.evaluate(`
+      Array.from(document.querySelectorAll('input[type="checkbox"]'))
+        .forEach(function(cb) { if (!cb.checked) cb.click(); });
+    `).catch(() => undefined);
+    logger.info('[Browser] SmartRecruiters: checkboxes відмічено');
 
-    // КРОК 6: Submit
-    const submitSels = [
-      '[data-test="button-submit"]',
-      'button:has-text("Send application")',
-      'button:has-text("Submit application")',
-      'button:has-text("Submit")',
-      'button:has-text("Apply")',
-      'button[type="submit"]',
-    ];
-    for (const sel of submitSels) {
+    // КРОК 8: Submit через JS evaluate (без scroll, без перекриття)
+    const submitTexts = ['Send application', 'Submit application', 'Submit', 'Apply'];
+    for (const text of submitTexts) {
       try {
-        const btn = activePage.locator(sel).first();
+        const btn = activePage.getByRole('button', { name: new RegExp(text, 'i') }).first();
         if (await btn.isVisible({ timeout: 1000 })) {
           const disabled = await btn.isDisabled().catch(() => false);
           if (!disabled) {
-            const label = await btn.textContent().catch(() => sel);
-            await btn.click();
-            logger.info(`[Browser] SmartRecruiters: ✅ Submit: "${label?.trim()}"`);
+            logger.info(`[Browser] SmartRecruiters: ✅ Submit: "${text}"`);
+            await btn.evaluate('(el) => el.click()');
             await activePage.waitForTimeout(3000);
             return { success: true, method: 'SmartRecruiters', message: '✅ *Відгук відправлено через SmartRecruiters\\!*' };
+          } else {
+            logger.warn(`[Browser] SmartRecruiters: Submit disabled: "${text}"`);
           }
         }
       } catch { /* next */ }

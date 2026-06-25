@@ -235,4 +235,58 @@ Return ONLY a JSON array: ["skill1", "skill2"]
   }
 }
 
-export const openaiService = new OpenAIService();
+  // ── Vision: аналізуємо скріншот і знаходимо що клікати ──────────────────
+  async analyzeScreenshot(
+    screenshotBase64: string,
+    task: string,
+  ): Promise<{ action: string; selector?: string; text?: string; x?: number; y?: number; description: string }> {
+    try {
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/png;base64,${screenshotBase64}`,
+                  detail: 'high',
+                },
+              },
+              {
+                type: 'text',
+                text: `You are a browser automation assistant. Analyze this screenshot and ${task}
+
+Return ONLY valid JSON (no markdown, no explanation):
+{
+  "action": "click" | "fill" | "submit" | "wait" | "done",
+  "description": "what you see and what to do",
+  "text": "button text to click (if action=click)",
+  "selector": "CSS selector if identifiable",
+  "x": pixel_x_coordinate,
+  "y": pixel_y_coordinate
+}
+
+Rules:
+- If you see a cookie banner: action="click", text="Accept all" or similar accept button
+- If you see an Apply/Aplikuj button: action="click" with its text and coordinates
+- If you see a form: action="fill", describe which fields are visible
+- If form is filled and Submit is visible: action="submit"
+- If already submitted/thank you page: action="done"
+- x,y should be the CENTER of the element you want to click`,
+              },
+            ],
+          },
+        ],
+        max_tokens: 300,
+      });
+
+      const raw = response.choices[0]?.message?.content ?? '{}';
+      return JSON.parse(extractJson(raw));
+    } catch (err) {
+      logger.warn(`[AI Vision] Error: ${(err as Error).message}`);
+      return { action: 'wait', description: 'Vision analysis failed' };
+    }
+  }
+}
