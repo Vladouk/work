@@ -16,6 +16,16 @@ const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
 // Зберігаємо черги для кожного юзера
 const applyQueues = new Map<number, string[]>();
 const runningApply = new Set<number>();
+// Тимчасове сховище URL-списків для кнопок (уникаємо обмеження 64 байти callback_data)
+const pendingBulkUrls = new Map<string, string[]>();
+
+function storePendingUrls(urls: string[]): string {
+  const id = Date.now().toString(36);
+  pendingBulkUrls.set(id, urls);
+  // Чистимо старі записи через 10 хвилин
+  setTimeout(() => pendingBulkUrls.delete(id), 10 * 60 * 1000);
+  return id;
+}
 
 // ── Парсимо URL з тексту ────────────────────────────────────────────────────
 function extractUrls(text: string): string[] {
@@ -78,13 +88,13 @@ export async function handleUrlsInMessage(ctx: Context): Promise<boolean> {
 
   // Якщо одне посилання — питаємо чи потрібен авто-відгук
   if (urls.length === 1) {
+    const id = storePendingUrls(urls);
     await ctx.reply(
-      `🔗 Знайшов посилання на вакансію:\n${urls[0]}\n\n` +
-      `Подати авто-відгук?`,
+      `🔗 Знайшов посилання на вакансію:\n${urls[0]}\n\nПодати авто-відгук?`,
       {
         reply_markup: {
           inline_keyboard: [[
-            { text: '📨 Так, подати відгук', callback_data: `bulk_url_${encodeURIComponent(urls[0])}` },
+            { text: '📨 Так, подати відгук', callback_data: `bulk_go_${id}` },
             { text: '❌ Ні', callback_data: 'noop' },
           ]],
         },
@@ -93,22 +103,41 @@ export async function handleUrlsInMessage(ctx: Context): Promise<boolean> {
     return true;
   }
 
-  // Якщо декілька — одразу показуємо список і пропонуємо bulk apply
+  // Якщо декілька — список і кнопка bulk apply
+  const id = storePendingUrls(urls);
   await ctx.reply(
     `🔗 *Знайшов ${urls.length} посилань на вакансії:*\n\n` +
-    urls.map((u, i) => `${i + 1}. ${new URL(u).hostname} — ${u.slice(0, 60)}...`).join('\n') +
+    urls.map((u, i) => {
+      try { return `${i + 1}. ${new URL(u).hostname} — \`${u.slice(0, 50)}...\``; }
+      catch { return `${i + 1}. ${u.slice(0, 60)}`; }
+    }).join('\n') +
     `\n\nПодати авто-відгук на всі?`,
     {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [[
-          { text: `📨 Подати на всі (${urls.length})`, callback_data: `bulk_start_${Buffer.from(JSON.stringify(urls)).toString('base64').slice(0, 200)}` },
+          { text: `📨 Подати на всі (${urls.length})`, callback_data: `bulk_go_${id}` },
           { text: '❌ Скасувати', callback_data: 'noop' },
         ]],
       },
     },
   );
   return true;
+}
+
+// ── Callback: bulk_go_ (один або список URL через ID) ──────────────────────
+export async function handleBulkGoCallback(ctx: Context, id: string): Promise<void> {
+  await ctx.answerCallbackQuery('⏳ Запускаю...');
+  const from = ctx.from;
+  if (!from) return;
+
+  const urls = pendingBulkUrls.get(id);
+  if (!urls || urls.length === 0) {
+    await ctx.reply('❌ Список вакансій застарів. Скинь посилання ще раз.');
+    return;
+  }
+  pendingBulkUrls.delete(id);
+  await startBulkApply(ctx, from.id, urls);
 }
 
 // ── Callback: bulk_url_ (одне посилання з тексту) ──────────────────────────
@@ -132,7 +161,6 @@ export async function handleBulkStartCallback(ctx: Context, encodedUrls: string)
   if (!from) return;
 
   try {
-    // Декодуємо список URLs
     const urls: string[] = JSON.parse(Buffer.from(encodedUrls, 'base64').toString());
     await startBulkApply(ctx, from.id, urls);
   } catch {

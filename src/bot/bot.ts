@@ -11,7 +11,7 @@ import { handleCv, handleCvUpload, handleCvMatchJobs, handleCoverLetterCallback,
 import { handleStats } from './handlers/stats.handler';
 import { handleProfile, startProfileWizard, handleProfileInput, clearProfile } from './handlers/profile.handler';
 import { handleAutoApplyPrompt, handleAutoApplyConfirm } from './handlers/autoapply.handler';
-import { handleBulkApplyCommand, handleUrlsInMessage, handleBulkUrlCallback, handleBulkStartCallback, handleBulkStop } from './handlers/bulkapply.handler';
+import { handleBulkApplyCommand, handleUrlsInMessage, handleBulkGoCallback, handleBulkUrlCallback, handleBulkStartCallback, handleBulkStop } from './handlers/bulkapply.handler';
 import { handleAdmin, handleAdminUsers, handleAdminJobs, handleAdminParsers, handleAdminRunParsers, handleAdminLogs } from './handlers/admin.handler';
 
 import { UserRepository } from '../repositories/UserRepository';
@@ -140,6 +140,11 @@ export function createBot(): Bot {
   });
 
   // ── Bulk apply callbacks ───────────────────────────────────────────────────
+  bot.callbackQuery(/^bulk_go_(.+)$/, async (ctx) => {
+    await handleBulkGoCallback(ctx, ctx.match[1]);
+  });
+
+  // Legacy callbacks (fallback)
   bot.callbackQuery(/^bulk_url_(.+)$/, async (ctx) => {
     await handleBulkUrlCallback(ctx, ctx.match[1]);
   });
