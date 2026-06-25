@@ -426,15 +426,14 @@ export class BrowserService {
     logger.info('[Browser] Pracuj: clicking submit button...');
     await submitBtn.scrollIntoViewIfNeeded().catch(() => undefined);
 
-    // Реєструємо listener на нову вкладку ДО кліку
+    // Знаємо URL поточних вкладок ДО кліку
     const ctx = page.context();
-    const newPagePromise = ctx.waitForEvent('page', { timeout: 15000 }).catch(() => null);
+    const pagesBefore = new Set(ctx.pages().map(p2 => p2.url()));
 
     await submitBtn.click();
-    await page.waitForTimeout(3500);
+    await page.waitForTimeout(3000);
 
     // --- Pracuj може показати попередження "Pracodawca prosi o wypełnienie swojego formularza" ---
-    // Треба клікнути "Kontynuuj aplikowanie" щоб продовжити
     const kontynuujSels = [
       'button:has-text("Kontynuuj aplikowanie")',
       'a:has-text("Kontynuuj aplikowanie")',
@@ -445,31 +444,49 @@ export class BrowserService {
         const btn = page.locator(sel).first();
         if (await btn.isVisible({ timeout: 3000 })) {
           logger.info('[Browser] Pracuj: клікаю "Kontynuuj aplikowanie"');
+          // Оновлюємо список вкладок перед кліком
+          const pagesBeforeKont = new Set(ctx.pages().map(p2 => p2.url()));
           await btn.click();
-          await page.waitForTimeout(4000);
+          await page.waitForTimeout(5000); // більше часу для відкриття зовнішнього сайту
+
+          // Шукаємо нову вкладку що з'явилась після кліку
+          const allPages = ctx.pages();
+          logger.info(`[Browser] Вкладки після Kontynuuj (${allPages.length}): ${allPages.map(p2 => p2.url()).join(' | ')}`);
+
+          const newTab = allPages.find(p2 => !pagesBeforeKont.has(p2.url()) && p2 !== page);
+          if (newTab) {
+            logger.info(`[Browser] Знайдено нову вкладку: ${newTab.url()}`);
+            await newTab.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => undefined);
+            await newTab.waitForTimeout(2000);
+            await this.acceptCookies(newTab);
+            await newTab.waitForTimeout(1000);
+            return this.handleExternalAts(newTab, p, newTab.url(), originalUrl);
+          }
           break;
         }
       } catch { /* next */ }
     }
 
-    // --- Перевіряємо нову вкладку (зовнішній сайт роботодавця) ---
-    const newTab = await newPagePromise;
-    if (newTab) {
-      logger.info(`[Browser] Pracuj: нова вкладка: ${newTab.url()}`);
-      await newTab.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => undefined);
-      await newTab.waitForTimeout(2000);
-      await this.acceptCookies(newTab);
-      await newTab.waitForTimeout(1000);
-      return this.handleExternalAts(newTab, p, newTab.url(), originalUrl);
+    // --- Перевіряємо всі вкладки що з'явились після початкового кліку ---
+    const allPagesNow = ctx.pages();
+    logger.info(`[Browser] Всі вкладки (${allPagesNow.length}): ${allPagesNow.map(p2 => p2.url()).join(' | ')}`);
+
+    const newTabAny = allPagesNow.find(p2 => !pagesBefore.has(p2.url()) && p2 !== page && !p2.url().includes('about:blank'));
+    if (newTabAny) {
+      logger.info(`[Browser] Нова вкладка знайдена: ${newTabAny.url()}`);
+      await newTabAny.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => undefined);
+      await newTabAny.waitForTimeout(2000);
+      await this.acceptCookies(newTabAny);
+      await newTabAny.waitForTimeout(1000);
+      return this.handleExternalAts(newTabAny, p, newTabAny.url(), originalUrl);
     }
 
     // --- Перевіряємо чи відбувся редирект на поточній вкладці ---
     const afterClickUrl = page.url();
-    logger.info(`[Browser] Pracuj після кліку: ${afterClickUrl}`);
+    logger.info(`[Browser] Pracuj поточна вкладка: ${afterClickUrl}`);
 
     if (!afterClickUrl.includes('pracuj.pl')) {
-      // Редирект на зовнішній ATS на поточній вкладці
-      logger.info('[Browser] Pracuj: редирект на зовнішній сайт, обробляю...');
+      logger.info('[Browser] Pracuj: редирект на зовнішній сайт на поточній вкладці');
       await this.acceptCookies(page);
       await page.waitForTimeout(1500);
       return this.handleExternalAts(page, p, afterClickUrl, originalUrl);
