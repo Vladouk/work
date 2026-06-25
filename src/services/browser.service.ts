@@ -310,6 +310,7 @@ export class BrowserService {
       'Aplikuj teraz', 'Aplikuj szybko', 'Aplikuj', 'Aplikuj na tę ofertę',
       'Zaaplikuj', 'Złóż aplikację', 'Wyślij aplikację', 'Prześlij CV',
       'Aplikuj przez Internet',
+      'Jestem zainteresowany', 'Jestem zainteresowana',
       // Ukrainian/Russian
       'Відгукнутись', 'Подати заявку', 'Відправити резюме',
       'Откликнуться', 'Подать заявку',
@@ -1470,13 +1471,97 @@ export class BrowserService {
   }
 
   private async smartrecruiters(page: Page, p: FillFormProfile): Promise<BrowserApplyResult> {
-    await this.f(page, 'input[name="firstName"]', p.firstName);
-    await this.f(page, 'input[name="lastName"]', p.lastName);
-    await this.f(page, 'input[name="email"]', p.email);
-    await this.f(page, 'input[name="phoneNumber"]', p.phone);
-    await this.f(page, 'textarea[name="message"]', p.coverLetter);
-    if (p.cvLocalPath) await this.upload(page, p.cvLocalPath);
-    return { success: true, method: 'SmartRecruiters', message: '✅ SmartRecruiters заповнено\\!' };
+    logger.info('[Browser] SmartRecruiters handler...');
+    await page.waitForTimeout(2000);
+
+    // КРОК 1: Клікаємо кнопку Apply/Jestem zainteresowany
+    const applyBtns = [
+      'button:has-text("Jestem zainteresowany")',
+      'button:has-text("Jestem zainteresowana")',
+      'button:has-text("Apply now")',
+      'button:has-text("Apply Now")',
+      'button:has-text("Apply")',
+      '[data-test="button-apply"]',
+      '[data-testid="apply-button"]',
+    ];
+    for (const sel of applyBtns) {
+      try {
+        const btn = page.locator(sel).first();
+        if (await btn.isVisible({ timeout: 1500 })) {
+          const label = await btn.textContent().catch(() => sel);
+          logger.info(`[Browser] SmartRecruiters: клікаю "${label?.trim()}"`);
+          await btn.click();
+          await page.waitForTimeout(3000);
+          break;
+        }
+      } catch { /* next */ }
+    }
+
+    // КРОК 2: Може відкритись нова вкладка з формою
+    const allPages = page.context().pages();
+    const newTab = allPages.find(p2 => p2 !== page && !p2.url().includes('about:blank'));
+    let activePage = page;
+    if (newTab) {
+      logger.info(`[Browser] SmartRecruiters: нова вкладка: ${newTab.url()}`);
+      await newTab.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => undefined);
+      await this.acceptCookies(newTab);
+      await newTab.waitForTimeout(1500);
+      activePage = newTab;
+    }
+
+    logger.info(`[Browser] SmartRecruiters: сторінка: ${activePage.url()}`);
+
+    // КРОК 3: Заповнюємо форму
+    logger.info('[Browser] SmartRecruiters: заповнюю поля...');
+    await this.f(activePage, 'input[name="firstName"]', p.firstName);
+    logger.info(`[Browser] SmartRecruiters: firstName = "${p.firstName}"`);
+    await this.f(activePage, 'input[name="lastName"]', p.lastName);
+    logger.info(`[Browser] SmartRecruiters: lastName = "${p.lastName}"`);
+    await this.f(activePage, 'input[name="email"]', p.email);
+    logger.info(`[Browser] SmartRecruiters: email = "${p.email}"`);
+    await this.f(activePage, 'input[name="phoneNumber"]', p.phone);
+    logger.info(`[Browser] SmartRecruiters: phone = "${p.phone}"`);
+    await this.f(activePage, 'textarea[name="message"]', p.coverLetter);
+    logger.info('[Browser] SmartRecruiters: cover letter заповнено');
+
+    // КРОК 4: CV
+    if (p.cvLocalPath && fs.existsSync(p.cvLocalPath)) {
+      logger.info(`[Browser] SmartRecruiters: завантажую CV...`);
+      await this.upload(activePage, p.cvLocalPath);
+    }
+
+    // КРОК 5: Consent checkboxes
+    await this.acceptConsents(activePage);
+
+    // КРОК 6: Submit
+    const submitSels = [
+      '[data-test="button-submit"]',
+      'button:has-text("Send application")',
+      'button:has-text("Submit application")',
+      'button:has-text("Submit")',
+      'button:has-text("Apply")',
+      'button[type="submit"]',
+    ];
+    for (const sel of submitSels) {
+      try {
+        const btn = activePage.locator(sel).first();
+        if (await btn.isVisible({ timeout: 1000 })) {
+          const disabled = await btn.isDisabled().catch(() => false);
+          if (!disabled) {
+            const label = await btn.textContent().catch(() => sel);
+            await btn.click();
+            logger.info(`[Browser] SmartRecruiters: ✅ Submit: "${label?.trim()}"`);
+            await activePage.waitForTimeout(3000);
+            return { success: true, method: 'SmartRecruiters', message: '✅ *Відгук відправлено через SmartRecruiters\\!*' };
+          }
+        }
+      } catch { /* next */ }
+    }
+
+    return {
+      success: false, method: 'SmartRecruiters',
+      message: `📋 Форму SmartRecruiters заповнено\\. Натисни Submit вручну\\.`,
+    };
   }
 
   private async teamtailor(page: Page, p: FillFormProfile): Promise<BrowserApplyResult> {
