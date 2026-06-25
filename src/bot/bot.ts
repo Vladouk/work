@@ -12,7 +12,8 @@ import { handleStats } from './handlers/stats.handler';
 import { handleProfile, startProfileWizard, handleProfileInput, clearProfile } from './handlers/profile.handler';
 import { handleAutoApplyPrompt, handleAutoApplyConfirm } from './handlers/autoapply.handler';
 import { handleBulkApplyCommand, handleUrlsInMessage, handleBulkGoCallback, handleBulkUrlCallback, handleBulkStartCallback, handleBulkStop } from './handlers/bulkapply.handler';
-import { handleAdmin, handleAdminUsers, handleAdminJobs, handleAdminParsers, handleAdminRunParsers, handleAdminLogs } from './handlers/admin.handler';
+import { handleLinkedInApplyCommand, handleLinkedInStatus, handleLinkedInStop } from './handlers/linkedin.handler';
+import { handleAdmin, handleAdminUsers, handleAdminJobs, handleAdminParsers, handleAdminRunParsers, handleAdminRunLinkedIn, handleAdminLogs } from './handlers/admin.handler';
 
 import { UserRepository } from '../repositories/UserRepository';
 
@@ -46,12 +47,16 @@ export function createBot(): Bot {
   bot.command('profile', handleProfile);
   bot.command('apply_bulk', handleBulkApplyCommand);
   bot.command('stop_apply', async (ctx) => { await handleBulkStop(ctx); });
+  // LinkedIn
+  bot.command('linkedin_apply', handleLinkedInApplyCommand);
+  bot.command('linkedin_status', handleLinkedInStatus);
   // Admin
   bot.command('admin', handleAdmin);
   bot.command('admin_users', handleAdminUsers);
   bot.command('admin_jobs', handleAdminJobs);
   bot.command('admin_parsers', handleAdminParsers);
   bot.command('admin_run', handleAdminRunParsers);
+  bot.command('admin_linkedin', handleAdminRunLinkedIn);
   bot.command('admin_logs', handleAdminLogs);
 
   // ── Menu callbacks ─────────────────────────────────────────────────────────
@@ -155,6 +160,11 @@ export function createBot(): Bot {
 
   bot.callbackQuery('bulk_stop', async (ctx) => {
     await handleBulkStop(ctx);
+  });
+
+  // ── LinkedIn callbacks ─────────────────────────────────────────────────────
+  bot.callbackQuery('linkedin_stop', async (ctx) => {
+    await handleLinkedInStop(ctx);
   });
 
   // ── Auto-apply callbacks ───────────────────────────────────────────────────

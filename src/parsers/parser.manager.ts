@@ -4,6 +4,7 @@ import { JustJoinITParser } from './justjoinit.parser';
 import { NoFluffJobsParser } from './nofluffjobs.parser';
 import { BulldogJobParser } from './bulldogjob.parser';
 import { PracujPlParser } from './pracujpl.parser';
+import { LinkedInParser } from './linkedin.parser';
 import { VacancyRepository } from '../repositories/VacancyRepository';
 import { prisma } from '../infrastructure/database';
 import { logger } from '../infrastructure/logger';
@@ -18,6 +19,7 @@ export class ParserManager {
       new NoFluffJobsParser(), // ✅ API з фільтром по seniority
       new BulldogJobParser(),  // ✅ HTML + __NEXT_DATA__
       new PracujPlParser(),    // ✅ Playwright (обхід Cloudflare)
+      // LinkedInParser виключено з автоматичного runAll — потребує активного логіну
     ];
     this.vacancyRepo = new VacancyRepository();
   }
@@ -34,6 +36,13 @@ export class ParserManager {
 
     logger.info(`[ParserManager] Цикл завершено. Знайдено: ${total}, Нових: ${newJobs}`);
     return { total, newJobs };
+  }
+
+  // Запускати LinkedIn окремо (потребує логіну в браузері)
+  async runLinkedIn(): Promise<{ jobsFound: number; jobsNew: number }> {
+    const parser = new LinkedInParser();
+    const result = await this.runParser(parser);
+    return { jobsFound: result.jobsFound, jobsNew: result.jobsNew };
   }
 
   async runParser(

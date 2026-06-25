@@ -119,6 +119,29 @@ export async function handleAdminRunParsers(ctx: Context): Promise<void> {
   }
 }
 
+export async function handleAdminRunLinkedIn(ctx: Context): Promise<void> {
+  const from = ctx.from;
+  if (!from || !isAdmin(from.id)) return;
+
+  const msg = await ctx.reply('⏳ Running LinkedIn parser (requires browser login)...');
+  try {
+    const manager = new ParserManager();
+    const { jobsFound, jobsNew } = await manager.runLinkedIn();
+
+    await ctx.api.editMessageText(
+      from.id,
+      msg.message_id,
+      `✅ *LinkedIn parser done!*\n\nFound: ${jobsFound}\nNew: ${jobsNew}`,
+      { parse_mode: 'Markdown' },
+    );
+  } catch (err) {
+    logger.error(`[Admin] LinkedIn parser error: ${(err as Error).message}`);
+    await ctx.api
+      .editMessageText(from.id, msg.message_id, `❌ LinkedIn parser failed: ${(err as Error).message.slice(0, 100)}`)
+      .catch(() => undefined);
+  }
+}
+
 export async function handleAdminLogs(ctx: Context): Promise<void> {
   const from = ctx.from;
   if (!from || !isAdmin(from.id)) return;
