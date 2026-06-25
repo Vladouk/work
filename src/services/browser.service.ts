@@ -160,6 +160,17 @@ export class BrowserService {
 
       const result = await this.handlePage(page, profile, jobUrl);
 
+      // If success on main page — close any new tabs that opened (external ATS popups)
+      if (result.success) {
+        const ctx2 = await this.getContext();
+        const pages = ctx2.pages();
+        for (const p2 of pages) {
+          if (p2 !== page) {
+            await p2.close().catch(() => undefined);
+          }
+        }
+      }
+
       const screenshot = await page.screenshot({ type: 'png', fullPage: false }).catch(() => null);
 
       // Save cookies for next time (in case persistent profile not available)
@@ -414,6 +425,11 @@ export class BrowserService {
     // Click "Aplikuj szybko" submit button
     logger.info('[Browser] Pracuj: clicking submit button...');
     await submitBtn.scrollIntoViewIfNeeded().catch(() => undefined);
+
+    // Реєструємо listener на нову вкладку ДО кліку
+    const ctx = page.context();
+    const newPagePromise = ctx.waitForEvent('page', { timeout: 15000 }).catch(() => null);
+
     await submitBtn.click();
     await page.waitForTimeout(3500);
 
@@ -428,20 +444,31 @@ export class BrowserService {
       try {
         const btn = page.locator(sel).first();
         if (await btn.isVisible({ timeout: 3000 })) {
-          logger.info('[Browser] Pracuj: кліку "Kontynuuj aplikowanie"');
+          logger.info('[Browser] Pracuj: клікаю "Kontynuuj aplikowanie"');
           await btn.click();
-          await page.waitForTimeout(3000);
+          await page.waitForTimeout(4000);
           break;
         }
       } catch { /* next */ }
     }
 
-    // --- Перевіряємо чи відбувся редирект на зовнішній сайт ---
+    // --- Перевіряємо нову вкладку (зовнішній сайт роботодавця) ---
+    const newTab = await newPagePromise;
+    if (newTab) {
+      logger.info(`[Browser] Pracuj: нова вкладка: ${newTab.url()}`);
+      await newTab.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => undefined);
+      await newTab.waitForTimeout(2000);
+      await this.acceptCookies(newTab);
+      await newTab.waitForTimeout(1000);
+      return this.handleExternalAts(newTab, p, newTab.url(), originalUrl);
+    }
+
+    // --- Перевіряємо чи відбувся редирект на поточній вкладці ---
     const afterClickUrl = page.url();
     logger.info(`[Browser] Pracuj після кліку: ${afterClickUrl}`);
 
     if (!afterClickUrl.includes('pracuj.pl')) {
-      // Редирект на зовнішній ATS — обробляємо
+      // Редирект на зовнішній ATS на поточній вкладці
       logger.info('[Browser] Pracuj: редирект на зовнішній сайт, обробляю...');
       await this.acceptCookies(page);
       await page.waitForTimeout(1500);
@@ -473,8 +500,21 @@ export class BrowserService {
       }
     }
 
-    // Check current URL — if still on pracuj.pl assume success
+    // Check current URL — dziękujemy = success
     const afterUrl = page.url();
+    logger.info(`[Browser] Pracuj після submit: ${afterUrl}`);
+
+    if (afterUrl.includes('dziekujemy') || afterUrl.includes('podziekowanie') || afterUrl.includes('confirmation')) {
+      logger.info('[Browser] Pracuj: URL dziękujemy — успіх!');
+      return {
+        success: true,
+        method: 'Pracuj.pl Quick Apply',
+        message:
+          `✅ *Відгук відправлено через Pracuj\\.pl\\!*\n\n` +
+          `${messageFilled ? '📝 Повідомлення роботодавцю додано\\.' : ''}`,
+      };
+    }
+
     if (afterUrl.includes('pracuj.pl')) {
       logger.info('[Browser] Pracuj: submitted, still on pracuj.pl — assuming success');
       return {
@@ -524,10 +564,30 @@ export class BrowserService {
     if (currentUrl.includes('ashbyhq.com'))     return this.ashby(page, p);
 
     // Невідомий зовнішній сайт — universal flow:
-    // 1. Клікаємо "Apply with CV" якщо є вибір
+    // КРОК 1: Клікаємо "Apply now" якщо є — відкриває модал
+    const applyNowSels = [
+      'button:has-text("Apply now")',
+      'a:has-text("Apply now")',
+      'button:has-text("Aplikuj")',
+      'a:has-text("Aplikuj")',
+    ];
+    for (const sel of applyNowSels) {
+      try {
+        const btn = page.locator(sel).first();
+        if (await btn.isVisible({ timeout: 2000 })) {
+          logger.info(`[Browser] External: клікаю "${sel}"`);
+          await btn.click();
+          await page.waitForTimeout(2500);
+          break;
+        }
+      } catch { /* next */ }
+    }
+
+    // КРОК 2: Якщо є вибір "Apply with CV" vs "Apply with profile" — клікаємо CV
     const applyWithCvSels = [
       'button:has-text("Apply with CV")',
       'a:has-text("Apply with CV")',
+      'div:has-text("Apply with CV")',
       '[data-test*="apply-with-cv"]',
     ];
     for (const sel of applyWithCvSels) {
@@ -542,22 +602,25 @@ export class BrowserService {
       } catch { /* next */ }
     }
 
-    // 2. Заповнюємо поля форми
+    // КРОК 3: Заповнюємо поля форми
     await this.fillExternalForm(page, p);
 
-    // 3. Завантажуємо CV
+    // КРОК 4: Завантажуємо CV
     if (p.cvLocalPath && fs.existsSync(p.cvLocalPath)) {
       await this.upload(page, p.cvLocalPath);
+      await page.waitForTimeout(1000);
     }
 
-    // 4. Приймаємо чекбокси згоди (RODO/Privacy)
+    // КРОК 5: Приймаємо чекбокси згоди (RODO/Privacy)
     await this.acceptConsents(page);
+    await page.waitForTimeout(500);
 
-    // 5. Клікаємо Submit / Apply now
+    // КРОК 6: Клікаємо Submit / Apply now
     const submitSels = [
       'button:has-text("Apply now")',
       'button:has-text("Wyślij")',
       'button:has-text("Submit")',
+      'button:has-text("Zatwierdź")',
       'button[type="submit"]',
       'input[type="submit"]',
     ];
@@ -571,7 +634,7 @@ export class BrowserService {
             await btn.scrollIntoViewIfNeeded().catch(() => undefined);
             await btn.click();
             submitted = true;
-            logger.info(`[Browser] External: submitted via ${sel}`);
+            logger.info(`[Browser] External: submitted via "${sel}"`);
             await page.waitForTimeout(3000);
             break;
           }
@@ -597,23 +660,87 @@ export class BrowserService {
     };
   }
 
-  // ── Заповнення полів зовнішньої форми ─────────────────────────────────────
+  // ── Розумне заповнення будь-якої форми по смислу полів ───────────────────
   private async fillExternalForm(page: Page, p: FillFormProfile): Promise<void> {
-    await this.ft(page, ['input[name*="first" i]', 'input[id*="first" i]', 'input[placeholder*="First name" i]', 'input[autocomplete="given-name"]'], p.firstName);
-    await this.ft(page, ['input[name*="last" i]', 'input[id*="last" i]', 'input[placeholder*="Surname" i]', 'input[autocomplete="family-name"]'], p.lastName);
-    await this.ft(page, ['input[name*="name"]', 'input[placeholder*="Full name" i]'], p.fullName);
-    await this.ft(page, ['input[type="email"]', 'input[name*="email" i]', 'input[id*="email" i]'], p.email);
-    await this.ft(page, ['input[type="tel"]', 'input[name*="phone" i]', 'input[id*="phone" i]'], p.phone);
-    if (p.linkedin) await this.ft(page, ['input[name*="linkedin" i]', 'input[placeholder*="LinkedIn" i]', 'input[id*="linkedin" i]'], p.linkedin);
-    if (p.github) await this.ft(page, ['input[name*="github" i]', 'input[placeholder*="GitHub" i]'], p.github);
-    await this.ft(page, ['textarea[name*="cover" i]', 'textarea[name*="message" i]', 'textarea[id*="cover" i]', 'textarea'], p.coverLetter);
+    // Маппінг: які значення підходять для яких ключових слів
+    const fieldMap: Array<{ keywords: string[]; value: string; type?: string }> = [
+      { keywords: ['firstname', 'first_name', 'fname', 'given-name', 'imię', 'imie', 'vorname', 'prénom'], value: p.firstName },
+      { keywords: ['lastname', 'last_name', 'lname', 'family-name', 'surname', 'nazwisko', 'nachname', 'nom'], value: p.lastName },
+      { keywords: ['fullname', 'full_name', 'name', 'imienazwisko'], value: p.fullName },
+      { keywords: ['email', 'e-mail', 'mail', 'adres e-mail'], value: p.email, type: 'email' },
+      { keywords: ['phone', 'tel', 'telefon', 'mobile', 'numer', 'handy'], value: p.phone, type: 'tel' },
+      { keywords: ['linkedin'], value: p.linkedin ?? '' },
+      { keywords: ['github', 'gitlab'], value: p.github ?? '' },
+      { keywords: ['salary', 'wynagrodzenie', 'oczekiwania', 'gehalt'], value: p.salaryExpectation ?? '' },
+      { keywords: ['cover', 'motivation', 'message', 'letter', 'wiadomosc', 'wiadomość', 'list', 'motivace', 'anschreiben', 'notes', 'uwagi'], value: p.coverLetter },
+    ];
 
-    // Work mode checkboxes (Remote, Hybrid, Office) — відмічаємо Remote якщо є
+    // Збираємо всі видимі input і textarea
+    const inputs = page.locator('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]), textarea');
+    const count = await inputs.count();
+    logger.info(`[Browser] SmartFill: знайдено ${count} полів`);
+
+    for (let i = 0; i < count; i++) {
+      try {
+        const el = inputs.nth(i);
+        if (!await el.isVisible({ timeout: 300 })) continue;
+
+        // Збираємо всі атрибути що описують поле
+        const attrs = await el.evaluate(`(node) => {
+          const n = node;
+          const labelEl = n.id
+            ? document.querySelector('label[for="' + n.id + '"]')
+            : n.closest('label') || n.parentElement && n.parentElement.querySelector('label');
+          return {
+            name: (n.getAttribute('name') || '').toLowerCase(),
+            id: (n.getAttribute('id') || '').toLowerCase(),
+            placeholder: (n.getAttribute('placeholder') || '').toLowerCase(),
+            autocomplete: (n.getAttribute('autocomplete') || '').toLowerCase(),
+            type: (n.getAttribute('type') || 'text').toLowerCase(),
+            label: (labelEl && labelEl.textContent || '').toLowerCase().trim(),
+            ariaLabel: (n.getAttribute('aria-label') || '').toLowerCase(),
+          };
+        }`).catch(() => null) as { name: string; id: string; placeholder: string; autocomplete: string; type: string; label: string; ariaLabel: string } | null;
+
+        if (!attrs) continue;
+
+        const haystack = `${attrs.name} ${attrs.id} ${attrs.placeholder} ${attrs.autocomplete} ${attrs.label} ${attrs.ariaLabel}`;
+
+        // Знаходимо підходяще значення
+        let matched = '';
+        for (const { keywords, value, type } of fieldMap) {
+          if (!value) continue;
+          // Перевірка по type (email, tel)
+          if (type && attrs.type === type) { matched = value; break; }
+          // Перевірка по ключових словах
+          if (keywords.some(kw => haystack.includes(kw))) { matched = value; break; }
+        }
+
+        if (matched) {
+          const current = await el.inputValue().catch(() => '');
+          if (!current) {
+            await el.fill(matched);
+            logger.info(`[Browser] SmartFill: "${attrs.name || attrs.id || attrs.placeholder}" = "${matched.slice(0, 30)}"`);
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    // Work mode checkboxes — відмічаємо Remote якщо є
     try {
-      const remoteCheckbox = page.locator('input[type="checkbox"] + label:has-text("Remote"), label:has-text("Remote") input[type="checkbox"]').first();
-      if (await remoteCheckbox.isVisible({ timeout: 800 })) {
-        const checked = await remoteCheckbox.isChecked().catch(() => false);
-        if (!checked) await remoteCheckbox.check();
+      const labels = page.locator('label');
+      const labelCount = await labels.count();
+      for (let i = 0; i < labelCount; i++) {
+        const label = labels.nth(i);
+        const text = ((await label.textContent().catch(() => '')) ?? '').toLowerCase();
+        if (text.includes('remote')) {
+          const cb = label.locator('input[type="checkbox"]').or(page.locator(`input[type="checkbox"]#${await label.getAttribute('for') ?? '__none__'}`));
+          if (await cb.isVisible({ timeout: 300 }).catch(() => false)) {
+            const checked = await cb.isChecked().catch(() => false);
+            if (!checked) await cb.check();
+            break;
+          }
+        }
       }
     } catch { /* skip */ }
   }
@@ -1222,23 +1349,34 @@ export class BrowserService {
   }
 
   private async generic(page: Page, p: FillFormProfile, originalUrl: string): Promise<BrowserApplyResult> {
-    let n = 0;
-    n += await this.ft(page, ['input[name*="first_name" i]', 'input[placeholder*="First name" i]', 'input[autocomplete="given-name"]'], p.firstName);
-    n += await this.ft(page, ['input[name*="last_name" i]', 'input[placeholder*="Last name" i]', 'input[autocomplete="family-name"]'], p.lastName);
-    if (n === 0) n += await this.ft(page, ['input[name="name" i]', 'input[placeholder*="Full name" i]'], p.fullName);
-    n += await this.ft(page, ['input[type="email"]', 'input[name="email" i]', 'input[autocomplete="email"]'], p.email);
-    n += await this.ft(page, ['input[type="tel"]', 'input[name*="phone" i]', 'input[autocomplete="tel"]'], p.phone);
-    if (p.linkedin) await this.ft(page, ['input[name*="linkedin" i]'], p.linkedin);
-    if (p.github) await this.ft(page, ['input[name*="github" i]'], p.github);
-    n += await this.ft(page, ['textarea[name*="cover" i]', 'textarea[name*="message" i]', 'textarea'], p.coverLetter);
+    // Використовуємо smart filler замість hardcoded селекторів
+    await this.fillExternalForm(page, p);
+    await this.acceptConsents(page);
     if (p.cvLocalPath) await this.upload(page, p.cvLocalPath).catch(() => undefined);
 
-    if (n >= 2) {
-      return { success: true, method: 'Generic', message: `✅ Форму заповнено \\(${n} полів\\)\\! Натисни Submit\\.` };
+    // Спробуємо натиснути submit
+    const submitSels = [
+      'button[type="submit"]', 'input[type="submit"]',
+      'button:has-text("Submit")', 'button:has-text("Apply")',
+      'button:has-text("Send")', 'button:has-text("Wyślij")',
+    ];
+    for (const sel of submitSels) {
+      try {
+        const btn = page.locator(sel).first();
+        if (await btn.isVisible({ timeout: 800 })) {
+          const disabled = await btn.isDisabled().catch(() => false);
+          if (!disabled) {
+            await btn.click();
+            await page.waitForTimeout(2000);
+            return { success: true, method: 'Generic', message: `✅ Форму заповнено і відправлено\\!` };
+          }
+        }
+      } catch { /* next */ }
     }
+
     return {
       success: false, method: 'Generic',
-      message: `⚠️ Не знайшов поля форми\\.\n\n📋 *Ім'я:* ${p.fullName}\n*Email:* ${p.email}\n*Телефон:* ${p.phone}\n\n🔗 [Вакансія](${originalUrl})`,
+      message: `📋 Форму заповнено\\. Натисни Submit у браузері\\.\n\n*Ім'я:* ${p.fullName}\n*Email:* ${p.email}\n*Телефон:* ${p.phone}\n\n🔗 [Вакансія](${originalUrl})`,
     };
   }
 
