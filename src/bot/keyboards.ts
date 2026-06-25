@@ -8,7 +8,9 @@ export const mainMenuKeyboard = new InlineKeyboard()
   .text('📄 Моє CV', 'menu_cv')
   .row()
   .text('👤 Профіль', 'menu_profile')
-  .text('📊 Статистика', 'menu_stats');
+  .text('📊 Статистика', 'menu_stats')
+  .row()
+  .text('💼 LinkedIn Easy Apply', 'menu_linkedin');
 
 export const settingsKeyboard = new InlineKeyboard()
   .text('🔑 Ключові слова', 'settings_keywords')
@@ -37,6 +39,19 @@ export const profileMenuKeyboard = new InlineKeyboard()
   .text('🗑 Очистити', 'profile_clear')
   .row()
   .text('◀ Назад', 'menu_main');
+
+export const linkedinMenuKeyboard = new InlineKeyboard()
+  .text('🔍 Статус (залогінений?)', 'linkedin_check_status')
+  .row()
+  .text('🚀 Запустити Easy Apply', 'linkedin_start_prompt')
+  .row()
+  .text('🤖 Авто-пошук вакансій (парсер)', 'linkedin_run_parser')
+  .row()
+  .text('◀ Назад', 'menu_main');
+
+export const linkedinApplyKeyword = (keywords: string) => new InlineKeyboard()
+  .text('✅ Запустити', `linkedin_go_${encodeKeywords(keywords)}`)
+  .text('❌ Скасувати', 'menu_linkedin');
 
 export function jobActionsKeyboard(jobId: number): InlineKeyboard {
   return new InlineKeyboard()
@@ -74,3 +89,8 @@ export const autoApplyConfirmKeyboard = (jobId: number) =>
   new InlineKeyboard()
     .text('✅ Так, відправити', `confirm_apply_${jobId}`)
     .text('❌ Скасувати', `hide_job_${jobId}`);
+
+// Encode keywords for callback_data (max 64 bytes)
+function encodeKeywords(kw: string): string {
+  return encodeURIComponent(kw).slice(0, 40);
+}

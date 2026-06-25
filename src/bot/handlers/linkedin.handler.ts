@@ -6,6 +6,7 @@ import { linkedInApplyService } from '../../services/linkedin.apply.service';
 import { openaiService } from '../../services/openai.service';
 import { config } from '../../config';
 import { logger } from '../../infrastructure/logger';
+import { linkedinMenuKeyboard } from '../keyboards';
 import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -16,8 +17,59 @@ const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
 
 // Stop flag per user
 const stopFlags = new Map<number, boolean>();
+// Waiting for keywords input per user
+const awaitingKeywords = new Map<number, boolean>();
 
-// ── /linkedin_apply ──────────────────────────────────────────────────────────
+// ── LinkedIn Menu (кнопка в головному меню) ──────────────────────────────────
+export async function handleLinkedInMenu(ctx: Context): Promise<void> {
+  await ctx.answerCallbackQuery?.().catch(() => undefined);
+  await ctx.reply(
+    `💼 *LinkedIn Easy Apply*\n\n` +
+    `Бот відкриє браузер, знайде вакансії з *Easy Apply* і автоматично подасть відгуки\\.\n\n` +
+    `*Що потрібно:*\n` +
+    `• Залогінитись в LinkedIn у браузері \\(один раз\\)\n` +
+    `• Заповнений /profile з email та телефоном\n` +
+    `• Завантажений /cv\n\n` +
+    `Обери дію:`,
+    { parse_mode: 'MarkdownV2', reply_markup: linkedinMenuKeyboard },
+  );
+}
+
+// ── Кнопка "Запустити Easy Apply" → просимо ввести ключові слова ─────────────
+export async function handleLinkedInStartPrompt(ctx: Context): Promise<void> {
+  await ctx.answerCallbackQuery?.().catch(() => undefined);
+  const from = ctx.from;
+  if (!from) return;
+
+  awaitingKeywords.set(from.id, true);
+
+  await ctx.reply(
+    `🔍 *Введи ключові слова для пошуку:*\n\n` +
+    `Приклади:\n` +
+    `• \`junior node\\.js\`\n` +
+    `• \`qa tester remote\`\n` +
+    `• \`junior react wroclaw\`\n\n` +
+    `_Або натисни /cancel для скасування_`,
+    { parse_mode: 'MarkdownV2' },
+  );
+}
+
+// Перехоплення введення ключових слів (викликати з handleProfileInput у bot.ts)
+export async function handleLinkedInKeywordsInput(ctx: Context): Promise<boolean> {
+  const from = ctx.from;
+  if (!from) return false;
+  if (!awaitingKeywords.get(from.id)) return false;
+
+  awaitingKeywords.delete(from.id);
+
+  const text = ctx.message?.text ?? '';
+  if (text.startsWith('/')) return false;
+
+  await startLinkedInApply(ctx, from.id, text.trim());
+  return true;
+}
+
+// ── /linkedin_apply (команда) ────────────────────────────────────────────────
 export async function handleLinkedInApplyCommand(ctx: Context): Promise<void> {
   const from = ctx.from;
   if (!from) return;
@@ -27,14 +79,8 @@ export async function handleLinkedInApplyCommand(ctx: Context): Promise<void> {
 
   if (!keywords) {
     await ctx.reply(
-      `💼 *LinkedIn Easy Apply*\n\n` +
-      `Бот знайде вакансії на LinkedIn і автоматично подасть відгук через Easy Apply\\.\n\n` +
-      `*Формат:*\n` +
-      `\`/linkedin\\_apply junior node\\.js\`\n` +
-      `\`/linkedin\\_apply qa tester wroclaw\`\n` +
-      `\`/linkedin\\_apply junior react remote\`\n\n` +
-      `_Потрібно бути залогіненим в браузері\\._`,
-      { parse_mode: 'MarkdownV2' },
+      `💼 *LinkedIn Easy Apply*\n\nВведи ключові слова після команди:\n\`/linkedin\\_apply junior node\\.js\``,
+      { parse_mode: 'MarkdownV2', reply_markup: linkedinMenuKeyboard },
     );
     return;
   }
@@ -44,26 +90,37 @@ export async function handleLinkedInApplyCommand(ctx: Context): Promise<void> {
 
 // ── /linkedin_status — перевірка логіну ─────────────────────────────────────
 export async function handleLinkedInStatus(ctx: Context): Promise<void> {
+  const from = ctx.from;
+  if (!from) return;
+
+  await ctx.answerCallbackQuery?.().catch(() => undefined);
   const msg = await ctx.reply('⏳ Перевіряю статус LinkedIn...');
 
   try {
     const { loggedIn, name } = await linkedInApplyService.checkLogin();
 
-    await ctx.api.editMessageText(
-      ctx.from!.id,
-      msg.message_id,
-      loggedIn
-        ? `✅ *LinkedIn підключено*\n\n👤 ${name ?? 'LinkedIn User'}\n\nЕasy Apply готовий до роботи\\.`
-        : `❌ *Не залогінений в LinkedIn*\n\nВідкрий браузер вручну і залогінься на linkedin\\.com\\.\nСесія збережеться автоматично\\.`,
-      { parse_mode: 'MarkdownV2' },
-    );
+    if (loggedIn) {
+      await ctx.api.editMessageText(
+        from.id,
+        msg.message_id,
+        `✅ *LinkedIn підключено*\n\n👤 ${escMd(name ?? 'LinkedIn User')}\n\nEasy Apply готовий до роботи\\.`,
+        { parse_mode: 'MarkdownV2', reply_markup: linkedinMenuKeyboard },
+      );
+    } else {
+      await ctx.api.editMessageText(
+        from.id,
+        msg.message_id,
+        `❌ *Не залогінений в LinkedIn*\n\nЯк залогінитись:\n1\\. Запусти бота локально\n2\\. Відкрий браузер вручну через browser\\-profile\n3\\. Залогінься на linkedin\\.com — сесія збережеться автоматично\\.`,
+        { parse_mode: 'MarkdownV2', reply_markup: linkedinMenuKeyboard },
+      );
+    }
   } catch (err) {
     await ctx.api.editMessageText(
-      ctx.from!.id,
+      from.id,
       msg.message_id,
-      `❌ Помилка перевірки\\: ${(err as Error).message.slice(0, 100)}`,
-      { parse_mode: 'MarkdownV2' },
-    );
+      `❌ Помилка перевірки\\: ${escMd((err as Error).message.slice(0, 100))}`,
+      { parse_mode: 'MarkdownV2', reply_markup: linkedinMenuKeyboard },
+    ).catch(() => undefined);
   }
 }
 
@@ -253,4 +310,44 @@ export async function handleLinkedInStop(ctx: Context): Promise<void> {
   if (!from) return;
   stopFlags.set(from.id, true);
   logger.info(`[LinkedIn] Stop requested by user ${from.id}`);
+}
+
+// ── Запуск apply з готовими keywords (через callback linkedin_go_*) ───────────
+export async function handleLinkedInApplyWithKeywords(ctx: Context, keywords: string): Promise<void> {
+  const from = ctx.from;
+  if (!from) return;
+  await startLinkedInApply(ctx, from.id, keywords);
+}
+
+// ── Запуск парсера (кнопка "Авто-пошук вакансій") ────────────────────────────
+export async function handleLinkedInRunParser(ctx: Context): Promise<void> {
+  await ctx.answerCallbackQuery('🤖 Запускаю...').catch(() => undefined);
+  const from = ctx.from;
+  if (!from) return;
+
+  const msg = await ctx.reply(
+    '⏳ *Запускаю LinkedIn парсер\\.\\.\\.* Це може зайняти 2\\-5 хвилин\\.',
+    { parse_mode: 'MarkdownV2' },
+  );
+
+  try {
+    const { ParserManager } = await import('../../parsers/parser.manager');
+    const manager = new ParserManager();
+    const { jobsFound, jobsNew } = await manager.runLinkedIn();
+
+    await ctx.api.editMessageText(
+      from.id, msg.message_id,
+      `✅ *LinkedIn парсер завершено\\!*\n\n` +
+      `📋 Знайдено: *${jobsFound}*\n` +
+      `🆕 Нових: *${jobsNew}*\n\n` +
+      `Переглянути: /jobs`,
+      { parse_mode: 'MarkdownV2', reply_markup: linkedinMenuKeyboard },
+    ).catch(() => undefined);
+  } catch (err) {
+    await ctx.api.editMessageText(
+      from.id, msg.message_id,
+      `❌ Помилка: ${escMd((err as Error).message.slice(0, 150))}`,
+      { parse_mode: 'MarkdownV2', reply_markup: linkedinMenuKeyboard },
+    ).catch(() => undefined);
+  }
 }

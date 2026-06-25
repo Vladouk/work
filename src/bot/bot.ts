@@ -12,7 +12,7 @@ import { handleStats } from './handlers/stats.handler';
 import { handleProfile, startProfileWizard, handleProfileInput, clearProfile } from './handlers/profile.handler';
 import { handleAutoApplyPrompt, handleAutoApplyConfirm } from './handlers/autoapply.handler';
 import { handleBulkApplyCommand, handleUrlsInMessage, handleBulkGoCallback, handleBulkUrlCallback, handleBulkStartCallback, handleBulkStop } from './handlers/bulkapply.handler';
-import { handleLinkedInApplyCommand, handleLinkedInStatus, handleLinkedInStop } from './handlers/linkedin.handler';
+import { handleLinkedInApplyCommand, handleLinkedInStatus, handleLinkedInStop, handleLinkedInMenu, handleLinkedInStartPrompt, handleLinkedInKeywordsInput, handleLinkedInApplyWithKeywords, handleLinkedInRunParser } from './handlers/linkedin.handler';
 import { handleAdmin, handleAdminUsers, handleAdminJobs, handleAdminParsers, handleAdminRunParsers, handleAdminRunLinkedIn, handleAdminLogs } from './handlers/admin.handler';
 
 import { UserRepository } from '../repositories/UserRepository';
@@ -68,7 +68,7 @@ export function createBot(): Bot {
   });
   bot.callbackQuery('menu_settings', async (ctx) => { await ctx.answerCallbackQuery(); await handleSettings(ctx); });
   bot.callbackQuery('menu_cv', async (ctx) => { await ctx.answerCallbackQuery(); await handleCv(ctx); });
-  bot.callbackQuery('menu_stats', async (ctx) => { await ctx.answerCallbackQuery(); await handleStats(ctx); });
+  bot.callbackQuery('menu_linkedin', async (ctx) => { await ctx.answerCallbackQuery(); await handleLinkedInMenu(ctx); });
   bot.callbackQuery('menu_profile', async (ctx) => { await ctx.answerCallbackQuery(); await handleProfile(ctx); });
 
   // ── Settings callbacks ─────────────────────────────────────────────────────
@@ -167,6 +167,24 @@ export function createBot(): Bot {
     await handleLinkedInStop(ctx);
   });
 
+  bot.callbackQuery('linkedin_check_status', async (ctx) => {
+    await handleLinkedInStatus(ctx);
+  });
+
+  bot.callbackQuery('linkedin_start_prompt', async (ctx) => {
+    await handleLinkedInStartPrompt(ctx);
+  });
+
+  bot.callbackQuery('linkedin_run_parser', async (ctx) => {
+    await handleLinkedInRunParser(ctx);
+  });
+
+  bot.callbackQuery(/^linkedin_go_(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => undefined);
+    const keywords = decodeURIComponent(ctx.match[1]);
+    await handleLinkedInApplyWithKeywords(ctx, keywords);
+  });
+
   // ── Auto-apply callbacks ───────────────────────────────────────────────────
   bot.callbackQuery(/^auto_apply_(\d+)$/, async (ctx) => {
     logger.info(`[Bot] auto_apply callback: ${ctx.match[1]}`);
@@ -196,6 +214,10 @@ export function createBot(): Bot {
     // Profile wizard
     const profileHandled = await handleProfileInput(ctx);
     if (profileHandled) return;
+
+    // LinkedIn keywords input
+    const linkedinHandled = await handleLinkedInKeywordsInput(ctx);
+    if (linkedinHandled) return;
 
     // Settings input
     const settingsHandled = await handleSettingsInput(ctx);
