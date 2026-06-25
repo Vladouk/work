@@ -91,7 +91,7 @@ export class NotificationService {
             });
           }
 
-          if (matchScore < minScore) continue;
+          if ((matchScore ?? 0) < minScore) continue;
         }
 
         await this.sendVacancyNotification(telegramId, vacancy, matchScore, matchReason);

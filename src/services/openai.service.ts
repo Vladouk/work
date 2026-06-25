@@ -233,7 +233,6 @@ Return ONLY a JSON array: ["skill1", "skill2"]
       return [];
     }
   }
-}
 
   // ── Vision: аналізуємо скріншот і знаходимо що клікати ──────────────────
   async analyzeScreenshot(
@@ -290,3 +289,5 @@ Rules:
     }
   }
 }
+
+export const openaiService = new OpenAIService();

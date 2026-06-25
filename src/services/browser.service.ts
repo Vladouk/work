@@ -300,75 +300,121 @@ export class BrowserService {
   private async findAndClickApplyButton(page: Page): Promise<boolean> {
     logger.info('[Browser] Шукаю кнопку Apply...');
 
+    // Спочатку чекаємо щоб сторінка повністю завантажилась
+    await page.waitForTimeout(1500);
+
     // Всі можливі варіанти кнопки "Подати заявку"
     const applyTexts = [
-      // English
-      'Apply now', 'Apply Now', 'Apply for this job', 'Apply for job',
-      'Apply for position', 'Apply online', 'Apply today', 'Apply',
-      'Quick apply', 'Easy apply', 'Fast apply', 'Submit application',
+      // English — від найточніших до загальних
+      'Apply now', 'Apply Now', 'Apply for this job', 'Apply for this position',
+      'Apply for job', 'Apply online', 'Apply today',
+      'Quick apply', 'Easy apply', 'Fast apply',
       // Polish
-      'Aplikuj teraz', 'Aplikuj szybko', 'Aplikuj', 'Aplikuj na tę ofertę',
-      'Zaaplikuj', 'Złóż aplikację', 'Wyślij aplikację', 'Prześlij CV',
-      'Aplikuj przez Internet',
+      'Aplikuj teraz', 'Aplikuj szybko', 'Aplikuj na tę ofertę', 'Aplikuj',
+      'Zaaplikuj', 'Złóż aplikację', 'Wyślij aplikację',
+      // SmartRecruiters Polish
       'Jestem zainteresowany', 'Jestem zainteresowana',
       // Ukrainian/Russian
-      'Відгукнутись', 'Подати заявку', 'Відправити резюме',
-      'Откликнуться', 'Подать заявку',
+      'Відгукнутись', 'Подати заявку', 'Откликнуться', 'Подать заявку',
       // German
-      'Jetzt bewerben', 'Bewerben', 'Zur Bewerbung',
+      'Jetzt bewerben', 'Bewerben',
       // French
-      'Postuler', 'Postuler maintenant',
+      'Postuler maintenant', 'Postuler',
+      // General — тільки в кінці (щоб не зачепити інші кнопки)
+      'Apply',
     ];
 
-    // Спочатку пробуємо getByRole (найнадійніше)
+    // Список слів які НЕ є кнопками Apply (виключаємо)
+    const excludeTexts = [
+      'cookie', 'Cookie', 'privacy', 'Privacy', 'settings', 'Settings',
+      'policy', 'Policy', 'terms', 'Terms', 'reject', 'Reject',
+    ];
+
+    // Метод 1: getByRole — шукає тільки button і link елементи
     for (const text of applyTexts) {
       try {
-        const btn = page.getByRole('button', { name: new RegExp(text, 'i') })
-          .or(page.getByRole('link', { name: new RegExp(text, 'i') }))
-          .first();
-        if (await btn.isVisible({ timeout: 500 })) {
-          const label = await btn.textContent().catch(() => text);
-          logger.info(`[Browser] ✅ Знайшов кнопку Apply: "${label?.trim()}"`);
-          await btn.scrollIntoViewIfNeeded().catch(() => undefined);
-          await btn.click();
-          logger.info(`[Browser] ✅ Клікнув: "${label?.trim()}"`);
+        // Шукаємо точно по тексту через getByRole
+        const candidates = page.getByRole('button', { name: new RegExp(`^${text}$`, 'i') })
+          .or(page.getByRole('link', { name: new RegExp(`^${text}$`, 'i') }));
+
+        const count = await candidates.count();
+        for (let i = 0; i < count; i++) {
+          const el = candidates.nth(i);
+          if (!await el.isVisible({ timeout: 400 })) continue;
+
+          // Перевіряємо що це не cookie кнопка
+          const label = ((await el.textContent().catch(() => '')) ?? '').trim();
+          if (excludeTexts.some(ex => label.toLowerCase().includes(ex.toLowerCase()))) {
+            logger.info(`[Browser] Пропускаю (cookie/privacy): "${label}"`);
+            continue;
+          }
+
+          // Перевіряємо позицію — Apply кнопка зазвичай у верхній частині сторінки
+          // або в sticky header, але НЕ в footer cookie banner
+          const box = await el.boundingBox().catch(() => null);
+          if (box) {
+            const viewportSize = page.viewportSize();
+            const pageHeight = viewportSize?.height ?? 800;
+            // Якщо кнопка в самому низу (>90% висоти viewport) — підозріло
+            if (box.y > pageHeight * 0.9) {
+              logger.info(`[Browser] Пропускаю кнопку внизу сторінки (y=${Math.round(box.y)}): "${label}"`);
+              continue;
+            }
+          }
+
+          logger.info(`[Browser] ✅ Apply знайдено (getByRole): "${label}"`);
+          await el.click();
+          logger.info(`[Browser] ✅ Клікнув: "${label}"`);
           await page.waitForTimeout(2500);
           return true;
         }
       } catch { /* next */ }
     }
 
-    // Fallback: data-test / aria-label атрибути
+    // Метод 2: data-test / aria-label атрибути
     const attrSels = [
-      '[data-test*="apply"]', '[data-testid*="apply"]',
-      '[aria-label*="apply" i]', '[aria-label*="aplikuj" i]',
-      'a[href*="apply"]', 'a[href*="application"]',
+      '[data-test*="apply"]:not([data-test*="cookie"])',
+      '[data-testid*="apply"]:not([data-testid*="cookie"])',
+      '[aria-label*="apply" i]:not([aria-label*="cookie" i])',
+      '[aria-label*="aplikuj" i]',
+      'a[href*="/apply"]:not([href*="cookie"])',
     ];
     for (const sel of attrSels) {
       try {
         const btn = page.locator(sel).first();
-        if (await btn.isVisible({ timeout: 500 })) {
-          const label = await btn.textContent().catch(() => sel);
-          logger.info(`[Browser] ✅ Знайшов Apply через атрибут: "${label?.trim()}" [${sel}]`);
-          await btn.scrollIntoViewIfNeeded().catch(() => undefined);
-          await btn.click();
-          logger.info(`[Browser] ✅ Клікнув через атрибут: ${sel}`);
-          await page.waitForTimeout(2500);
-          return true;
-        }
+        if (!await btn.isVisible({ timeout: 500 })) continue;
+
+        const label = ((await btn.textContent().catch(() => sel)) ?? sel).trim();
+        if (excludeTexts.some(ex => label.toLowerCase().includes(ex.toLowerCase()))) continue;
+
+        logger.info(`[Browser] ✅ Apply через атрибут: "${label}" [${sel}]`);
+        await btn.click();
+        logger.info(`[Browser] ✅ Клікнув: ${sel}`);
+        await page.waitForTimeout(2500);
+        return true;
       } catch { /* next */ }
     }
 
-    // Останній fallback: JS пошук по тексту в DOM
+    // Метод 3: JS пошук — виключаємо cookie елементи
     const clicked = await page.evaluate(`
       (function() {
-        var texts = ['Apply now','Apply Now','Apply','Aplikuj','Aplikuj szybko','Zaaplikuj',
-          'Jetzt bewerben','Bewerben','Postuler','Quick apply','Submit application'];
-        var els = Array.from(document.querySelectorAll('button, a[role="button"], a'));
+        var applyTexts = ['Apply now','Apply Now','Aplikuj teraz','Aplikuj szybko','Aplikuj',
+          'Jestem zainteresowany','Jestem zainteresowana','Jetzt bewerben','Postuler',
+          'Відгукнутись','Подати заявку'];
+        var cookieWords = ['cookie','privacy','settings','policy','terms','reject'];
+
+        var els = Array.from(document.querySelectorAll('button, a[role="button"]'));
         for (var i = 0; i < els.length; i++) {
           var t = (els[i].textContent || '').trim();
-          for (var j = 0; j < texts.length; j++) {
-            if (t.toLowerCase().includes(texts[j].toLowerCase())) {
+          var tl = t.toLowerCase();
+          if (cookieWords.some(function(w) { return tl.includes(w); })) continue;
+
+          // Перевіряємо позицію
+          var rect = els[i].getBoundingClientRect();
+          if (rect.y > window.innerHeight * 0.9) continue;
+
+          for (var j = 0; j < applyTexts.length; j++) {
+            if (tl === applyTexts[j].toLowerCase()) {
               els[i].click();
               return t;
             }
@@ -379,21 +425,21 @@ export class BrowserService {
     `).catch(() => null) as string | null;
 
     if (clicked) {
-      logger.info(`[Browser] ✅ Клікнув через JS DOM: "${clicked}"`);
+      logger.info(`[Browser] ✅ Клікнув через JS: "${clicked}"`);
       await page.waitForTimeout(2500);
       return true;
     }
 
-    // Логуємо що є на сторінці для дебагу
+    // Логуємо видимі кнопки для дебагу
     const visibleBtns = await page.$$eval(
       'button, a[role="button"]',
       els => els
         .filter(e => !!(e as { offsetParent?: unknown }).offsetParent)
         .map(e => (e.textContent || '').trim())
-        .filter(t => t.length > 0 && t.length < 50)
-        .slice(0, 20)
+        .filter(t => t.length > 0 && t.length < 60)
+        .slice(0, 25)
     ).catch(() => [] as string[]);
-    logger.warn(`[Browser] ⚠️ Apply кнопку не знайдено. Видимі кнопки: ${visibleBtns.join(' | ')}`);
+    logger.warn(`[Browser] ⚠️ Apply не знайдено. Видимі кнопки: ${visibleBtns.join(' | ')}`);
 
     return false;
   }
