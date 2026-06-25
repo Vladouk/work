@@ -241,39 +241,160 @@ export class BrowserService {
 
   // ── Accept cookie consent (universal) ─────────────────────────────────────
   private async acceptCookies(page: Page): Promise<void> {
+    logger.info('[Browser] Перевіряю cookie banner...');
+
     const cookieSelectors = [
       // Pracuj.pl
       'button[data-test="button-accept-all-in-cookiebar"]',
       'button[data-test="button-submitCookie"]',
-      // Generic Polish sites
+      // OneTrust (найпоширеніший)
+      '#onetrust-accept-btn-handler',
+      'button#onetrust-accept-btn-handler',
+      // CookieBot
+      '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll',
+      // Quantcast
+      '.qc-cmp2-summary-buttons button:last-child',
+      // Polish
       'button:has-text("Akceptuj wszystkie")',
+      'button:has-text("Zaakceptuj wszystkie")',
       'button:has-text("Zaakceptuj")',
       'button:has-text("Akceptuję")',
       'button:has-text("Akceptuj")',
-      // TeamQuest / generic cookie banners
-      'button:has-text("I Przyjmij wszystko")',
       'button:has-text("Przyjmij wszystko")',
       'button:has-text("Przyjmij wszystkie")',
-      'button:has-text("Zaakceptuj wszystko")',
-      // Generic English
+      'button:has-text("Zgadzam się")',
+      'button:has-text("Zezwól na wszystkie")',
+      // English
       'button:has-text("Accept all")',
       'button:has-text("Accept All")',
+      'button:has-text("Accept all cookies")',
       'button:has-text("Accept cookies")',
-      '#onetrust-accept-btn-handler',
+      'button:has-text("Accept & continue")',
+      'button:has-text("I agree")',
+      'button:has-text("Agree")',
+      'button:has-text("Got it")',
+      'button:has-text("OK")',
+      // Generic class-based
       '.cookie-accept',
+      '.accept-cookies',
+      '[data-testid*="cookie"][data-testid*="accept"]',
+      '[aria-label*="Accept" i][aria-label*="cookie" i]',
     ];
 
     for (const sel of cookieSelectors) {
       try {
         const btn = page.locator(sel).first();
-        if (await btn.isVisible({ timeout: 1500 })) {
+        if (await btn.isVisible({ timeout: 800 })) {
           await btn.click();
-          logger.info(`[Browser] Cookie consent accepted: ${sel}`);
-          await page.waitForTimeout(800);
+          logger.info(`[Browser] ✅ Cookie banner закрито: "${sel}"`);
+          await page.waitForTimeout(700);
           return;
         }
       } catch { /* next */ }
     }
+
+    logger.info('[Browser] Cookie banner не знайдено (ок)');
+  }
+
+  // ── Знайти і клікнути кнопку "Apply" на будь-якому сайті ──────────────────
+  private async findAndClickApplyButton(page: Page): Promise<boolean> {
+    logger.info('[Browser] Шукаю кнопку Apply...');
+
+    // Всі можливі варіанти кнопки "Подати заявку"
+    const applyTexts = [
+      // English
+      'Apply now', 'Apply Now', 'Apply for this job', 'Apply for job',
+      'Apply for position', 'Apply online', 'Apply today', 'Apply',
+      'Quick apply', 'Easy apply', 'Fast apply', 'Submit application',
+      // Polish
+      'Aplikuj teraz', 'Aplikuj szybko', 'Aplikuj', 'Aplikuj na tę ofertę',
+      'Zaaplikuj', 'Złóż aplikację', 'Wyślij aplikację', 'Prześlij CV',
+      'Aplikuj przez Internet',
+      // Ukrainian/Russian
+      'Відгукнутись', 'Подати заявку', 'Відправити резюме',
+      'Откликнуться', 'Подать заявку',
+      // German
+      'Jetzt bewerben', 'Bewerben', 'Zur Bewerbung',
+      // French
+      'Postuler', 'Postuler maintenant',
+    ];
+
+    // Спочатку пробуємо getByRole (найнадійніше)
+    for (const text of applyTexts) {
+      try {
+        const btn = page.getByRole('button', { name: new RegExp(text, 'i') })
+          .or(page.getByRole('link', { name: new RegExp(text, 'i') }))
+          .first();
+        if (await btn.isVisible({ timeout: 500 })) {
+          const label = await btn.textContent().catch(() => text);
+          logger.info(`[Browser] ✅ Знайшов кнопку Apply: "${label?.trim()}"`);
+          await btn.scrollIntoViewIfNeeded().catch(() => undefined);
+          await btn.click();
+          logger.info(`[Browser] ✅ Клікнув: "${label?.trim()}"`);
+          await page.waitForTimeout(2500);
+          return true;
+        }
+      } catch { /* next */ }
+    }
+
+    // Fallback: data-test / aria-label атрибути
+    const attrSels = [
+      '[data-test*="apply"]', '[data-testid*="apply"]',
+      '[aria-label*="apply" i]', '[aria-label*="aplikuj" i]',
+      'a[href*="apply"]', 'a[href*="application"]',
+    ];
+    for (const sel of attrSels) {
+      try {
+        const btn = page.locator(sel).first();
+        if (await btn.isVisible({ timeout: 500 })) {
+          const label = await btn.textContent().catch(() => sel);
+          logger.info(`[Browser] ✅ Знайшов Apply через атрибут: "${label?.trim()}" [${sel}]`);
+          await btn.scrollIntoViewIfNeeded().catch(() => undefined);
+          await btn.click();
+          logger.info(`[Browser] ✅ Клікнув через атрибут: ${sel}`);
+          await page.waitForTimeout(2500);
+          return true;
+        }
+      } catch { /* next */ }
+    }
+
+    // Останній fallback: JS пошук по тексту в DOM
+    const clicked = await page.evaluate(`
+      (function() {
+        var texts = ['Apply now','Apply Now','Apply','Aplikuj','Aplikuj szybko','Zaaplikuj',
+          'Jetzt bewerben','Bewerben','Postuler','Quick apply','Submit application'];
+        var els = Array.from(document.querySelectorAll('button, a[role="button"], a'));
+        for (var i = 0; i < els.length; i++) {
+          var t = (els[i].textContent || '').trim();
+          for (var j = 0; j < texts.length; j++) {
+            if (t.toLowerCase().includes(texts[j].toLowerCase())) {
+              els[i].click();
+              return t;
+            }
+          }
+        }
+        return null;
+      })()
+    `).catch(() => null) as string | null;
+
+    if (clicked) {
+      logger.info(`[Browser] ✅ Клікнув через JS DOM: "${clicked}"`);
+      await page.waitForTimeout(2500);
+      return true;
+    }
+
+    // Логуємо що є на сторінці для дебагу
+    const visibleBtns = await page.$$eval(
+      'button, a[role="button"]',
+      els => els
+        .filter(e => !!(e as { offsetParent?: unknown }).offsetParent)
+        .map(e => (e.textContent || '').trim())
+        .filter(t => t.length > 0 && t.length < 50)
+        .slice(0, 20)
+    ).catch(() => [] as string[]);
+    logger.warn(`[Browser] ⚠️ Apply кнопку не знайдено. Видимі кнопки: ${visibleBtns.join(' | ')}`);
+
+    return false;
   }
 
   // ── Pracuj.pl ──────────────────────────────────────────────────────────────
@@ -590,24 +711,13 @@ export class BrowserService {
     if (currentUrl.includes('taleo.net'))       return this.taleo(page, p, originalUrl);
     if (currentUrl.includes('icims.com'))       return this.icims(page, p, originalUrl);
 
-    // Невідомий зовнішній сайт — universal flow:
-    // КРОК 1: Клікаємо "Apply now" якщо є — відкриває модал
-    const applyNowSels = [
-      'button:has-text("Apply now")',
-      'a:has-text("Apply now")',
-      'button:has-text("Aplikuj")',
-      'a:has-text("Aplikuj")',
-    ];
-    for (const sel of applyNowSels) {
-      try {
-        const btn = page.locator(sel).first();
-        if (await btn.isVisible({ timeout: 2000 })) {
-          logger.info(`[Browser] External: клікаю "${sel}"`);
-          await btn.click();
-          await page.waitForTimeout(2500);
-          break;
-        }
-      } catch { /* next */ }
+    // Невідомий зовнішній сайт — universal flow з детальним логуванням:
+    logger.info(`[Browser] Universal flow для: ${currentUrl}`);
+
+    // КРОК 1: Клікаємо Apply кнопку (широкий список варіантів)
+    const applyClicked = await this.findAndClickApplyButton(page);
+    if (!applyClicked) {
+      logger.warn('[Browser] Apply кнопку не знайдено, продовжую з поточною сторінкою...');
     }
 
     // КРОК 2: Якщо є вибір "Apply with CV" vs "Apply with profile" — клікаємо CV
@@ -621,7 +731,7 @@ export class BrowserService {
       try {
         const btn = page.locator(sel).first();
         if (await btn.isVisible({ timeout: 2000 })) {
-          logger.info(`[Browser] External: клікаю "Apply with CV"`);
+          logger.info(`[Browser] Вибір методу: клікаю "Apply with CV" (${sel})`);
           await btn.click();
           await page.waitForTimeout(2500);
           break;
@@ -630,24 +740,33 @@ export class BrowserService {
     }
 
     // КРОК 3: Заповнюємо поля форми
+    logger.info('[Browser] Заповнюю поля форми...');
     await this.fillExternalForm(page, p);
 
     // КРОК 4: Завантажуємо CV
     if (p.cvLocalPath && fs.existsSync(p.cvLocalPath)) {
+      logger.info(`[Browser] Завантажую CV: ${p.cvLocalPath}`);
       await this.upload(page, p.cvLocalPath);
       await page.waitForTimeout(1000);
     }
 
     // КРОК 5: Приймаємо чекбокси згоди (RODO/Privacy)
+    logger.info('[Browser] Приймаю consent checkboxes...');
     await this.acceptConsents(page);
     await page.waitForTimeout(500);
 
     // КРОК 6: Клікаємо Submit / Apply now
+    logger.info('[Browser] Шукаю кнопку Submit...');
     const submitSels = [
       'button:has-text("Apply now")',
-      'button:has-text("Wyślij")',
+      'button:has-text("Apply Now")',
+      'button:has-text("Submit application")',
+      'button:has-text("Submit Application")',
       'button:has-text("Submit")',
+      'button:has-text("Wyślij")',
+      'button:has-text("Wyślij aplikację")',
       'button:has-text("Zatwierdź")',
+      'button:has-text("Send application")',
       'button[type="submit"]',
       'input[type="submit"]',
     ];
@@ -655,15 +774,18 @@ export class BrowserService {
     for (const sel of submitSels) {
       try {
         const btn = page.locator(sel).first();
-        if (await btn.isVisible({ timeout: 1500 })) {
+        if (await btn.isVisible({ timeout: 1000 })) {
           const disabled = await btn.isDisabled().catch(() => false);
           if (!disabled) {
+            const label = await btn.textContent().catch(() => sel);
             await btn.scrollIntoViewIfNeeded().catch(() => undefined);
             await btn.click();
             submitted = true;
-            logger.info(`[Browser] External: submitted via "${sel}"`);
+            logger.info(`[Browser] ✅ Submit клікнуто: "${label?.trim()}" [${sel}]`);
             await page.waitForTimeout(3000);
             break;
+          } else {
+            logger.warn(`[Browser] Submit заблоковано (disabled): ${sel}`);
           }
         }
       } catch { /* next */ }
@@ -1490,16 +1612,39 @@ export class BrowserService {
   }
 
   private async generic(page: Page, p: FillFormProfile, originalUrl: string): Promise<BrowserApplyResult> {
-    // Використовуємо smart filler замість hardcoded селекторів
+    logger.info(`[Browser] Generic handler: ${page.url()}`);
+
+    // Перевіряємо cookie banner
+    await this.acceptCookies(page);
+
+    // Шукаємо і клікаємо кнопку Apply
+    await this.findAndClickApplyButton(page);
+
+    // Перевіряємо нові вкладки після кліку
+    await page.waitForTimeout(1500);
+    const allPages = page.context().pages();
+    const newTab = allPages.find(p2 => p2 !== page && !p2.url().includes('about:blank'));
+    if (newTab) {
+      logger.info(`[Browser] Generic: нова вкладка після Apply: ${newTab.url()}`);
+      await newTab.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => undefined);
+      await this.acceptCookies(newTab);
+      await newTab.waitForTimeout(1000);
+      return this.handleExternalAts(newTab, p, newTab.url(), originalUrl);
+    }
+
+    // Заповнюємо форму на поточній сторінці
+    logger.info('[Browser] Generic: заповнюю форму...');
     await this.fillExternalForm(page, p);
     await this.acceptConsents(page);
     if (p.cvLocalPath) await this.upload(page, p.cvLocalPath).catch(() => undefined);
 
-    // Спробуємо натиснути submit
+    // Submit
     const submitSels = [
-      'button[type="submit"]', 'input[type="submit"]',
+      'button:has-text("Submit application")', 'button:has-text("Submit Application")',
+      'button:has-text("Apply now")', 'button:has-text("Apply Now")',
       'button:has-text("Submit")', 'button:has-text("Apply")',
       'button:has-text("Send")', 'button:has-text("Wyślij")',
+      'button[type="submit"]', 'input[type="submit"]',
     ];
     for (const sel of submitSels) {
       try {
@@ -1507,7 +1652,9 @@ export class BrowserService {
         if (await btn.isVisible({ timeout: 800 })) {
           const disabled = await btn.isDisabled().catch(() => false);
           if (!disabled) {
+            const label = await btn.textContent().catch(() => sel);
             await btn.click();
+            logger.info(`[Browser] Generic: ✅ Submit: "${label?.trim()}"`);
             await page.waitForTimeout(2000);
             return { success: true, method: 'Generic', message: `✅ Форму заповнено і відправлено\\!` };
           }
